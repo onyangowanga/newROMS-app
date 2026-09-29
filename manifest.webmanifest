@@ -1,0 +1,14 @@
+{
+  "name": "ROMS Recruitment Operations Management System",
+  "short_name": "ROMS",
+  "description": "Recruitment operations, candidate workflow, job orders, and branch finance.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f5f4ef",
+  "theme_color": "#15222b",
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

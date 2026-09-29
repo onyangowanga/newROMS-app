@@ -12,14 +12,14 @@ const branches = await Promise.all([
 ]);
 const [nairobi, mombasa, kisumu] = branches;
 const users = [
-  ['admin@rabiyaroms.top', 'ROMS Administrator', 'super_admin', null],
-  ['finance@rabiyaroms.top', 'Agency Finance', 'super_finance', null],
-  ['nairobi@rabiyaroms.top', 'Nairobi Operations', 'branch_staff', nairobi.id],
-  ['mombasa.finance@rabiyaroms.top', 'Mombasa Finance', 'branch_finance', mombasa.id],
-  ['recruiter@rabiyaroms.top', 'Global Recruiter', 'recruiter', null]
+  ['admin', 'admin@rabiyaroms.top', 'ROMS Administrator', 'super_admin', null],
+  ['finance', 'finance@rabiyaroms.top', 'Agency Finance', 'super_finance', null],
+  ['nairobi', 'nairobi@rabiyaroms.top', 'Nairobi Operations', 'branch_staff', nairobi.id],
+  ['mombasa.finance', 'mombasa.finance@rabiyaroms.top', 'Mombasa Finance', 'branch_finance', mombasa.id],
+  ['recruiter', 'recruiter@rabiyaroms.top', 'Global Recruiter', 'recruiter', null]
 ];
-for (const [email, name, role, branchId] of users) {
-  await prisma.user.upsert({ where: { email }, update: { name, role, branchId, passwordHash: password }, create: { email, name, role, branchId, passwordHash: password } });
+for (const [username, email, name, role, branchId] of users) {
+  await prisma.user.upsert({ where: { email }, update: { username, name, role, branchId, passwordHash: password, passwordResetRequired: false }, create: { username, email, name, role, branchId, passwordHash: password } });
 }
 await prisma.job.createMany({ data: [
   { title: 'Care Assistants', employer: 'NordCare Group', country: 'Finland', openings: 18, filled: 11 },

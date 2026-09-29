@@ -10,6 +10,7 @@ datasource db {
 enum Role {
   super_admin
   super_finance
+  branch_admin
   branch_staff
   branch_finance
   recruiter
@@ -17,13 +18,25 @@ enum Role {
 }
 
 enum CandidateStatus {
-  Registered
-  Documents_review
-  Medical_cleared
-  Interview_scheduled
-  Job_matched
-  Awaiting_payment
+  Application
+  Document_Verification
+  Interview
+  Offer_Contract
+  Commission_Processing
+  Visa_Processing
+  Visa_Approved
+  Balance_Payment
+  Ticketing
   Deployed
+  // Legacy values retained so existing deployments can migrate without discarding rows.
+  Registered
+  Briefing_Done
+  Medical_Done
+  Post_Medical_Follow_up
+  Embassy_Appointment_Set
+  Visa_Received
+  PDOS_Done
+  Ticket_Purchased
 }
 
 enum JobStatus {
@@ -46,22 +59,35 @@ enum TransactionStatus {
   Rejected
 }
 
+enum PassportCustodyStatus {
+  In_Storage
+  Released_To_Candidate
+  Released_To_Embassy
+  Returned_To_Office
+}
+
 model Branch {
   id           String        @id @default(cuid())
   name         String        @unique
   code         String        @unique
   accent       String        @default("#0f766e")
+  trackingSequence Int       @default(0)
   users        User[]
   candidates   Candidate[]
   transactions Transaction[]
+  passports    PassportInventory[]
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 }
 
 model User {
   id           String       @id @default(cuid())
+  username     String?      @unique
   email        String       @unique
   passwordHash String
+  passwordResetRequired Boolean @default(false)
+  passwordResetExpiresAt DateTime?
+  tokenVersion Int          @default(0)
   name         String
   role         Role
   branchId     String?
@@ -70,12 +96,16 @@ model User {
   candidate    Candidate?   @relation(fields: [candidateId], references: [id])
   active       Boolean      @default(true)
   auditLogs    AuditLog[]
+  passportsReceived PassportInventory[] @relation("PassportReceivedBy")
+  passportsReleased PassportInventory[] @relation("PassportReleasedBy")
   createdAt    DateTime     @default(now())
   updatedAt    DateTime      @updatedAt
 }
 
 model Candidate {
   id             String        @id @default(cuid())
+  trackingNumber String?       @unique
+  publicTrackingToken String?  @unique
   name           String
   firstName      String
   middleName     String?
@@ -97,11 +127,33 @@ model Candidate {
   branch         Branch        @relation(fields: [branchId], references: [id])
   registeredBy   String
   subAgentName   String?
-  status         CandidateStatus @default(Registered)
+  agreedFee      Decimal       @default(0) @db.Decimal(12, 2)
+  commissionTotal Decimal      @default(0) @db.Decimal(12, 2)
+  visaFee Decimal             @default(0) @db.Decimal(12, 2)
+  medicalFee Decimal          @default(0) @db.Decimal(12, 2)
+  foreignAffairsAttestationFee Decimal @default(0) @db.Decimal(12, 2)
+  kmpduMedicalFee Decimal     @default(0) @db.Decimal(12, 2)
+  embassyAttestationFee Decimal @default(0) @db.Decimal(12, 2)
+  airTicketFee Decimal        @default(0) @db.Decimal(12, 2)
+  officeFee Decimal           @default(0) @db.Decimal(12, 2)
+  paidAmount     Decimal       @default(0) @db.Decimal(12, 2)
+  specialComments String?
+  profilePicturePath String?
+  physicalPassportReceived Boolean @default(false)
+  physicalPassportReceivedAt DateTime?
+  documentsVerified Boolean @default(false)
+  interviewDate DateTime?
+  interviewOutcome String?
+  offerIssued Boolean @default(false)
+  offerSigned Boolean @default(false)
+  status         CandidateStatus @default(Application)
   submitted      DateTime      @default(now())
   docs           Int           @default(0)
   user           User?
   applications   Application[]
+  documents      Document[]
+  transactions   Transaction[]
+  passportInventory PassportInventory?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 }
@@ -110,6 +162,7 @@ model Job {
   id                      String        @id @default(cuid())
   reference               String?       @unique
   title                   String
+  jobType                 String        @default("Other")
   employer                String
   headcountRequired       Int           @default(0)
   contractDurationMonths  Int           @default(0)
@@ -146,19 +199,63 @@ model Transaction {
   id        String            @id @default(cuid())
   branchId  String
   branch    Branch            @relation(fields: [branchId], references: [id])
+  candidateId String?
+  candidate  Candidate?       @relation(fields: [candidateId], references: [id])
   type      String
+  otherDescription String?
   party     String
   amount    Decimal           @db.Decimal(12, 2)
+  currency  String            @default("KES")
+  exchangeRate Decimal         @default(1) @db.Decimal(12, 6)
+  amountKes Decimal            @default(0) @db.Decimal(12, 2)
+  paymentMethod String          @default("Cash")
+  paymentReference String?
   status    TransactionStatus @default(Pending)
   date      DateTime          @default(now())
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
 }
 
+model Document {
+  id          String    @id @default(cuid())
+  candidateId String
+  candidate   Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  name        String
+  fileName    String
+  filePath    String
+  mimeType    String
+  documentType String
+  createdAt   DateTime  @default(now())
+  @@index([candidateId, createdAt])
+}
+
+model PassportInventory {
+  id            String               @id @default(cuid())
+  candidateId   String               @unique
+  candidate     Candidate            @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  branchId      String
+  branch        Branch               @relation(fields: [branchId], references: [id])
+  status        PassportCustodyStatus @default(In_Storage)
+  storageLocation String?
+  notes         String?
+  receivedAt    DateTime             @default(now())
+  receivedById  String?
+  receivedBy    User?                @relation("PassportReceivedBy", fields: [receivedById], references: [id])
+  releasedAt    DateTime?
+  releasedById  String?
+  releasedBy    User?                @relation("PassportReleasedBy", fields: [releasedById], references: [id])
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  @@index([branchId, status])
+  @@index([receivedAt])
+}
+
 model AuditLog {
   id        String   @id @default(cuid())
-  actorId   String
-  actor     User     @relation(fields: [actorId], references: [id])
+  actorId   String?
+  actor     User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  actorName String?
+  actorEmail String?
   action    String
   entity    String
   entityId  String?
