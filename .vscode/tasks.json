@@ -1,0 +1,742 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "ROMS business API tests",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"--prefix",
+				"server",
+				"test"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS frontend test tools",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"install",
+				"--save-dev",
+				"lucide",
+				"esbuild",
+				"@playwright/test"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS verify runtime paths",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"console.log('CWD',process.cwd()); console.log('NODE',process.execPath); console.log(require('fs').readFileSync('package.json','utf8')); console.log(require.resolve('lucide')); console.log(require.resolve('@playwright/test'));"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS verify icon exports",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"const icons=require('lucide'); console.log(['createElement','Bell','Download','RefreshCw'].map(key=>[key,typeof icons[key]]));"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS frontend build",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build:css"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS browser validation",
+			"type": "shell",
+			"command": "npx",
+			"args": [
+				"playwright",
+				"test"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS staging directory",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"-o",
+				"ConnectTimeout=15",
+				"root@185.167.97.200",
+				"mkdir -p /tmp/roms-business-validation"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS staging upload",
+			"type": "shell",
+			"command": "scp",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"-o",
+				"ConnectTimeout=15",
+				"-r",
+				"server/package.json",
+				"server/package-lock.json",
+				"server/prisma",
+				"server/src",
+				"root@185.167.97.200:/tmp/roms-business-validation/"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS isolated PostgreSQL validation",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"cd /tmp/roms-business-validation && npm ci && npx prisma generate && node src/validate-postgres.js"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS corrected staging upload",
+			"type": "shell",
+			"command": "scp",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"server/src/index.js",
+				"server/src/validate-postgres.js",
+				"root@185.167.97.200:/tmp/roms-business-validation/src/"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS PostgreSQL final check",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"cd /tmp/roms-business-validation && node src/validate-postgres.js"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS dependency audit summary",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"const fs=require('fs');const cp=require('child_process');for(const root of ['.','server']){let output;try{output=cp.execSync('npm --prefix '+root+' audit --json',{encoding:'utf8'});}catch(error){output=error.stdout;}const report=JSON.parse(output);const lock=JSON.parse(fs.readFileSync(root+'/package-lock.json','utf8'));console.log(root,JSON.stringify(report.metadata.vulnerabilities));for(const [name,item] of Object.entries(report.vulnerabilities||{}))console.log(name+'@'+(lock.packages['node_modules/'+name]?.version||'?'),item.severity,JSON.stringify(item.fixAvailable));}"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS patched export install and test",
+			"type": "shell",
+			"command": "npm --prefix server install && npm --prefix server test",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS complete feature validation",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"test"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS pre-deployment backup",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"-o",
+				"ConnectTimeout=15",
+				"root@185.167.97.200",
+				"systemctl start roms-daily-backup.service && systemctl show roms-daily-backup.service -p Result -p ExecMainStatus && journalctl -u roms-daily-backup.service -n 4 --no-pager"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS deploy backend features",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"deploy-backend.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS deployment directory check",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"cd /opt/roms-api && pwd && ls -l package.json && npm prefix && grep -E 'verbose cwd|verbose argv' /root/.npm/_logs/2026-10-04T20_12_13_511Z-debug-0.log && curl --max-time 5 -fsS http://127.0.0.1:3000/api/health"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS dependency path check",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"cd /opt/roms-api && grep -n -E 'file:|\"link\"|workspaces' package-lock.json; npm --prefix /opt/roms-api ci"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS clean backend install check",
+			"type": "shell",
+			"command": "cd server && npm install && npm test",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS backend rollout status",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"systemctl show roms-api -p ActiveState -p ActiveEnterTimestamp && curl --max-time 8 -fsS http://127.0.0.1:3000/api/health && curl --max-time 8 -fsS http://127.0.0.1:3000/api/public/company"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS deployment process check",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"ls -l /opt/roms-api/package.json; grep -n roms-frontend /opt/roms-api/package.json || true; ps -eo pid,etime,comm | grep -E 'npm|prisma|scp|sftp|ssh'"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS backend deployment corrected lockfile",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"deploy-backend.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS deploy frontend features",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"deploy-frontend.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS live feature smoke check",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"set -eu; systemctl is-active roms-api; curl --max-time 10 -fsS https://new.rabiyaroms.top/api/health; echo; curl --max-time 10 -fsS https://new.rabiyaroms.top/api/public/company; echo; for asset in main.js state.js business-ui.js ui-icons.js; do curl --max-time 10 -fsS -o /dev/null -w \"$asset: %{http_code}\\n\" https://new.rabiyaroms.top/js/$asset; done; cd /opt/roms-api; node --check src/index.js; node --check src/business.js; rm -rf /tmp/roms-business-validation"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS final live verification",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"set -eu; systemctl is-active roms-api; curl --max-time 10 -fsS https://new.rabiyaroms.top/api/health; echo; curl --max-time 10 -fsSI https://new.rabiyaroms.top/api/public/company https://new.rabiyaroms.top/js/main.js https://new.rabiyaroms.top/js/state.js https://new.rabiyaroms.top/js/business-ui.js https://new.rabiyaroms.top/js/ui-icons.js; cd /opt/roms-api; node --check src/index.js; node --check src/business.js; rm -rf /tmp/roms-business-validation; echo VERIFIED"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS polish staging and PDF tools",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"mkdir -p /tmp/roms-business-validation; command -v pdftoppm || true"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS headed financial PDF review",
+			"type": "shell",
+			"command": "npx",
+			"args": [
+				"playwright",
+				"test",
+				"--headed",
+				"-g",
+				"professional financial PDFs"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS polish staged backend upload",
+			"type": "shell",
+			"command": "scp",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"-r",
+				"server/package.json",
+				"server/package-lock.json",
+				"server/prisma",
+				"server/src",
+				"root@185.167.97.200:/tmp/roms-business-validation/"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS polish PostgreSQL validation",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"cd /tmp/roms-business-validation && npm ci && npx prisma generate && node src/validate-postgres.js"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS polish safety backup",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"systemctl start roms-daily-backup.service && systemctl show roms-daily-backup.service -p Result -p ExecMainStatus"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS polish backup result",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"systemctl show roms-daily-backup.service -p ActiveState -p Result -p ExecMainStatus && journalctl -u roms-daily-backup.service -n 4 --no-pager"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS deploy polished finance backend",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"deploy-backend.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS deploy polished finance frontend",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"deploy-frontend.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS polished finance live verification",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"set -eu; systemctl is-active roms-api; curl --max-time 10 -fsS https://new.rabiyaroms.top/api/health; echo; curl --max-time 10 -fsSI https://new.rabiyaroms.top/api/public/company https://new.rabiyaroms.top/js/business-ui.js https://new.rabiyaroms.top/js/state.js https://new.rabiyaroms.top/styles.css; cd /opt/roms-api; node --check src/business.js; grep -n 'capture: true' /var/www/roms-new/js/state.js; rm -rf /tmp/roms-business-validation; echo VERIFIED"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS blueprint runtime facts",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"systemctl show roms-api -p User -p Group -p WorkingDirectory -p ActiveState; node --version; nginx -v; docker ps --format '{{.Names}} {{.Image}} {{.Ports}}'; ss -ltn | grep -E ':3000|:5433|:443|:80 '; systemctl list-timers roms-daily-backup.timer --no-pager; grep -rl 'new.rabiyaroms.top' /etc/nginx/sites-enabled | xargs -r grep -E 'server_name|root |proxy_pass|listen|client_max_body_size'"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS blueprint proxy and staging",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"mkdir -p /tmp/roms-business-validation; grep -Rl 'new.rabiyaroms.top' /etc/nginx/conf.d /etc/nginx/sites-enabled | xargs -r grep -E 'server_name|root |proxy_pass|listen|client_max_body_size'; systemctl is-enabled roms-daily-backup.timer"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS blueprint proxy locations",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"grep -Rl 'new.rabiyaroms.top' /etc/nginx/conf.d /etc/nginx/sites-enabled | xargs -r grep -n -E 'location |proxy_pass|root |return 301'; ss -ltn | grep ':8091' || true"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS read-only policy staging upload",
+			"type": "shell",
+			"command": "scp",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"-r",
+				"server/package.json",
+				"server/package-lock.json",
+				"server/prisma",
+				"server/src",
+				"root@185.167.97.200:/tmp/roms-business-validation/"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS read-only users PostgreSQL check",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"cd /tmp/roms-business-validation && npm ci && npx prisma generate && node src/validate-postgres.js"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS blueprint link validation",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"const fs=require('fs'),path=require('path');const files=['docs/system-blueprint.md','.github/modernize/assessment/engines/facts/architecture-diagram.md','docs/business-workflows.md','docs/node-postgres-deployment.md'];for(const file of files){const text=fs.readFileSync(file,'utf8');for(const match of text.matchAll(/\\]\\(([^)]+)\\)/g)){const target=match[1].split('#')[0];if(!target||/^[a-z]+:/i.test(target))continue;if(!fs.existsSync(path.resolve(path.dirname(file),target)))throw new Error('Broken link '+file+' -> '+target);}console.log('LINKS OK '+file);}"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS export policy safety backup",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"systemctl start roms-daily-backup.service && systemctl show roms-daily-backup.service -p Result -p ExecMainStatus"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS deploy registration export and user policy",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"deploy-backend.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS deploy expanded export and read-only UI",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"deploy-frontend.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS blueprint final links",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"const fs=require('fs'),path=require('path');for(const file of ['docs/system-blueprint.md','.github/modernize/assessment/engines/facts/architecture-diagram.md']){for(const match of fs.readFileSync(file,'utf8').matchAll(/\\]\\(([^)]+)\\)/g)){const target=match[1].split('#')[0];if(target&&!/^[a-z]+:/i.test(target)&&!fs.existsSync(path.resolve(path.dirname(file),target)))throw Error('Broken link: '+target);}console.log('LINKS OK '+file);}"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS final export permissions live check",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"set -eu; systemctl is-active roms-api; curl --max-time 10 -fsS https://new.rabiyaroms.top/api/health; echo; grep -n 'firstName.*First name' /var/www/roms-new/js/business-ui.js; grep -n \"app.post('/api/users', auth\" /opt/roms-api/src/index.js; curl --max-time 10 -fsSI https://new.rabiyaroms.top/js/main.js https://new.rabiyaroms.top/js/business-ui.js; rm -rf /tmp/roms-business-validation; echo VERIFIED"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS final clean live check",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"-o",
+				"ConnectTimeout=15",
+				"root@185.167.97.200",
+				"set -eu; systemctl is-active roms-api; curl --max-time 10 -fsS https://new.rabiyaroms.top/api/health; echo; grep -n 'firstName.*First name' /var/www/roms-new/js/business-ui.js; sed -n '471p;493p;524p' /opt/roms-api/src/index.js; curl --max-time 10 -fsSI https://new.rabiyaroms.top/js/main.js https://new.rabiyaroms.top/js/business-ui.js; rm -rf /tmp/roms-business-validation; echo VERIFIED"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS publish registration chooser final",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"deploy-frontend.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS verify published registration policy",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"-o",
+				"ConnectTimeout=15",
+				"root@185.167.97.200",
+				"set -eu; systemctl is-active roms-api; curl --max-time 10 -fsS https://new.rabiyaroms.top/api/health; echo; grep -n 'firstName.*First name' /var/www/roms-new/js/business-ui.js; sed -n '471p;493p;524p' /opt/roms-api/src/index.js; curl --max-time 10 -fsSI https://new.rabiyaroms.top/js/main.js https://new.rabiyaroms.top/js/business-ui.js; rm -rf /tmp/roms-business-validation; echo VERIFIED"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS recruiter validation directory",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"mkdir -p /tmp/roms-business-validation"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS recruiter ownership staging upload",
+			"type": "shell",
+			"command": "scp",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"-r",
+				"server/package.json",
+				"server/package-lock.json",
+				"server/prisma",
+				"server/src",
+				"root@185.167.97.200:/tmp/roms-business-validation/"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS recruiter PostgreSQL isolation check",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"cd /tmp/roms-business-validation && npm ci && npx prisma generate && node src/validate-postgres.js"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS recruiter rollout safety backup",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"root@185.167.97.200",
+				"systemctl start roms-daily-backup.service && systemctl show roms-daily-backup.service -p Result -p ExecMainStatus"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS deploy recruiter ownership backend",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"deploy-backend.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS deploy employer recruiter workspace",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"deploy-frontend.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS employer documentation links",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"const fs=require('fs'),path=require('path');for(const file of ['docs/system-blueprint.md','docs/business-workflows.md']){for(const match of fs.readFileSync(file,'utf8').matchAll(/\\]\\(([^)]+)\\)/g)){const target=match[1].split('#')[0];if(target&&!/^[a-z]+:/i.test(target)&&!fs.existsSync(path.resolve(path.dirname(file),target)))throw Error('Broken link: '+target);}console.log('LINKS OK '+file);}"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "ROMS verify live employer workspace",
+			"type": "shell",
+			"command": "ssh",
+			"args": [
+				"-o",
+				"BatchMode=yes",
+				"-o",
+				"ConnectTimeout=15",
+				"root@185.167.97.200",
+				"set -eu; systemctl is-active roms-api; curl --max-time 10 -fsS https://new.rabiyaroms.top/api/health; echo; grep -n 'function recruiterPage' /var/www/roms-new/js/business-ui.js; grep -n recruiterId /opt/roms-api/prisma/schema.prisma; curl --max-time 10 -fsSI https://new.rabiyaroms.top/js/business-ui.js https://new.rabiyaroms.top/js/main.js https://new.rabiyaroms.top/js/state.js; cd /opt/roms-api; node --check src/index.js; node --check src/recruiter-access.js; rm -rf /tmp/roms-business-validation; echo VERIFIED"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}

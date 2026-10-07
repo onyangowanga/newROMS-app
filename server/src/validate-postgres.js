@@ -1,0 +1,128 @@
+import 'dotenv/config';
+import dotenv from 'dotenv';
+import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcryptjs';
+import assert from 'node:assert/strict';
+import { execFileSync, spawn } from 'node:child_process';
+import path from 'node:path';
+import fs from 'node:fs';
+import { PDFDocument } from 'pdf-lib';
+
+if (!process.env.DATABASE_URL) dotenv.config({ path: '/opt/roms-api/.env', quiet: true });
+if (!process.env.DATABASE_URL) throw new Error('Database connection unavailable');
+const schema = `roms_validation_${Date.now()}`;
+const databaseUrl = new URL(process.env.DATABASE_URL);
+databaseUrl.searchParams.set('schema', schema);
+const env = { ...process.env, DATABASE_URL: databaseUrl.toString(), PORT: '4318', UPLOAD_DIR: path.resolve('validation-uploads'), SMTP_HOST: '', JWT_SECRET: 'isolated-validation-secret-not-for-production' };
+const prisma = new PrismaClient({ datasourceUrl: env.DATABASE_URL });
+let server;
+try {
+  execFileSync(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['prisma', 'db', 'push', '--skip-generate'], { env, stdio: 'inherit' });
+  const branch = await prisma.branch.create({ data: { name: 'Validation Branch', code: 'VAL' } });
+  const otherBranch = await prisma.branch.create({ data: { name: 'Other Validation Branch', code: 'OTHER' } });
+  const passwordHash = await bcrypt.hash('ValidationOnly123', 4);
+  for (const [username, role, branchId] of [['validationadmin', 'super_admin', null], ['validationfinance', 'super_finance', null], ['validationbranch', 'branch_admin', branch.id], ['validationother', 'branch_admin', otherBranch.id]]) {
+    await prisma.user.create({ data: { username, name: username, email: `${username}@example.test`, role, branchId, passwordHash } });
+  }
+  const candidate = await prisma.candidate.create({ data: { name: 'Validation Candidate', firstName: 'Validation', lastName: 'Candidate', dateOfBirth: new Date('1990-01-01'), gender: 'Female', maritalStatus: 'Single', passport: 'VALIDATION123', email: 'candidate@example.test', phone: '0700000000', registeredBy: 'Self', branchId: branch.id, commissionTotal: 2000, agreedFee: 2000, trackingNumber: 'ROMS-VAL-001', publicTrackingToken: 'validation-track-token' } });
+  server = spawn(process.execPath, ['src/index.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Validation API did not start')), 20000);
+    server.stdout.on('data', bytes => { if (bytes.toString().includes('ROMS API listening')) { clearTimeout(timer); resolve(); } });
+    server.once('exit', code => { clearTimeout(timer); reject(new Error(`Validation API exited ${code}`)); });
+    server.stderr.on('data', bytes => process.stderr.write(bytes));
+  });
+  const url = 'http://127.0.0.1:4318/api';
+  const request = (route, token, options = {}) => fetch(`${url}${route}`, { ...options, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
+  const tokens = {};
+  for (const username of ['validationadmin', 'validationfinance', 'validationbranch', 'validationother']) {
+    const response = await request('/auth/login', null, { method: 'POST', body: JSON.stringify({ username, password: 'ValidationOnly123' }) });
+    assert.equal(response.status, 200); tokens[username] = (await response.json()).token;
+  }
+  const admin = tokens.validationadmin;
+  const branchToken = tokens.validationbranch;
+  const branchUsers = await request('/users', branchToken); assert.equal(branchUsers.status, 200);
+  const branchAccount = await prisma.user.findUnique({ where: { username: 'validationbranch' } });
+  assert.equal((await request('/users', branchToken, { method: 'POST', body: '{}' })).status, 403);
+  assert.equal((await request(`/users/${branchAccount.id}`, branchToken, { method: 'PATCH', body: '{}' })).status, 403);
+  assert.equal((await request(`/users/${branchAccount.id}/reset-password`, branchToken, { method: 'POST' })).status, 403);
+  assert.equal((await request(`/users/${branchAccount.id}`, branchToken, { method: 'DELETE' })).status, 403);
+  console.log('PASS branch admin user-management read-only permissions');
+  const paymentResponse = await request('/transactions', admin, { method: 'POST', body: JSON.stringify({ candidateId: candidate.id, type: 'Receipt', amount: 1000, currency: 'KES', paymentMethod: 'Cash' }) });
+  assert.equal(paymentResponse.status, 201); const payment = await paymentResponse.json();
+  const approvals = await Promise.all([request(`/transactions/${payment.id}`, admin, { method: 'PATCH', body: '{"status":"Paid"}' }), request(`/transactions/${payment.id}`, tokens.validationfinance, { method: 'PATCH', body: '{"status":"Paid"}' })]);
+  assert.equal(approvals.filter(response => response.status === 200).length, 1);
+  assert.ok(approvals.every(response => [200, 409].includes(response.status)));
+  assert.equal(Number((await prisma.candidate.findUnique({ where: { id: candidate.id } })).paidAmount), 1000);
+  console.log('PASS concurrent approval counted once');
+  const receipt = await request(`/transactions/${payment.id}/receipt.pdf`, branchToken); assert.equal(receipt.status, 200); assert.ok((await PDFDocument.load(await receipt.arrayBuffer())).getPageCount());
+  assert.equal((await request(`/transactions/${payment.id}/void`, branchToken, { method: 'POST' })).status, 403);
+  const voids = await Promise.all([request(`/transactions/${payment.id}/void`, admin, { method: 'POST' }), request(`/transactions/${payment.id}/void`, tokens.validationfinance, { method: 'POST' })]);
+  assert.equal(voids.filter(response => response.status === 200).length, 1);
+  assert.equal(Number((await prisma.candidate.findUnique({ where: { id: candidate.id } })).paidAmount), 0);
+  assert.equal((await request(`/transactions/${payment.id}/receipt.pdf`, admin)).status, 409);
+  assert.equal((await request(`/transactions/${payment.id}`, admin, { method: 'DELETE' })).status, 409);
+  console.log('PASS concurrent void counted once; void receipt/deletion blocked');
+  const passport = await request('/passports', branchToken, { method: 'POST', body: JSON.stringify({ candidateId: candidate.id }) }); assert.equal(passport.status, 201); const passportRecord = await passport.json();
+  assert.equal((await request(`/passports/${passportRecord.id}`, tokens.validationother, { method: 'DELETE' })).status, 404);
+  assert.equal((await request(`/passports/${passportRecord.id}`, branchToken, { method: 'DELETE' })).status, 200);
+  assert.equal((await request('/passports', branchToken).then(response => response.json())).length, 0);
+  console.log('PASS passport branch isolation and deletion persistence');
+  const profile = await request(`/candidates/${candidate.id}`, branchToken, { method: 'PATCH', body: '{"email":"updated@example.test"}' }); assert.equal(profile.status, 200);
+  assert.equal((await prisma.candidate.findUnique({ where: { id: candidate.id } })).email, 'updated@example.test');
+  const exportFile = await request('/candidates/export', branchToken, { method: 'POST', body: JSON.stringify({ ids: [candidate.id], columns: ['name', 'email'] }) }); assert.equal(exportFile.status, 200); assert.ok((await exportFile.arrayBuffer()).byteLength > 1000);
+  console.log('PASS profile update and XLSX export');
+  const logoData = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5WQAAAAASUVORK5CYII=';
+  assert.equal((await request('/company', admin, { method: 'PUT', body: JSON.stringify({ companyName: 'Rabiya Employment Links', logoData }) })).status, 200);
+  const statement = await request(`/candidates/${candidate.id}/statement.pdf`, branchToken); assert.equal(statement.status, 200); assert.ok((await PDFDocument.load(await statement.arrayBuffer())).getPageCount());
+  const tracking = await request('/public/track/link/receipt.pdf', null, { method: 'POST', body: JSON.stringify({ token: 'validation-track-token' }) }); assert.equal(tracking.status, 200); assert.ok((await PDFDocument.load(await tracking.arrayBuffer())).getPageCount());
+  console.log('PASS branded statements and tracking PDF with logo');
+  const recruiterResponse = await request('/recruiters', branchToken, { method: 'POST', body: JSON.stringify({ name: 'Employer A', username: 'employera', email: 'employera@example.test', role: 'super_admin', branchId: otherBranch.id }) });
+  assert.equal(recruiterResponse.status, 201); const recruiterAccount = await recruiterResponse.json();
+  assert.equal(recruiterAccount.role, 'recruiter'); assert.equal(recruiterAccount.branchId, branch.id);
+  await prisma.user.update({ where: { id: recruiterAccount.id }, data: { passwordHash, passwordResetRequired: false } });
+  const otherRecruiter = await prisma.user.create({ data: { name: 'Employer B', username: 'employerb', email: 'employerb@example.test', role: 'recruiter', branchId: otherBranch.id, passwordHash } });
+  const recruiterLogin = await request('/auth/login', null, { method: 'POST', body: JSON.stringify({ username: 'employera', password: 'ValidationOnly123' }) });
+  assert.equal(recruiterLogin.status, 200); const recruiterToken = (await recruiterLogin.json()).token;
+  const jobBody = { title: 'Nurse', jobType: 'Nurses', recruiterId: otherRecruiter.id, country: 'Qatar', headcountRequired: 2, contractDurationMonths: 12, currency: 'QAR', minimumSalary: 2000, maximumSalary: 3000, location: 'Doha', requiredSkills: 'Nursing diploma and registration' };
+  const createdJobResponse = await request('/jobs', recruiterToken, { method: 'POST', body: JSON.stringify(jobBody) }); assert.equal(createdJobResponse.status, 201);
+  const ownJob = await createdJobResponse.json(); assert.equal(ownJob.recruiterId, recruiterAccount.id); assert.equal(ownJob.employer, 'Employer A');
+  const otherJob = await prisma.job.create({ data: { title: 'Employer B role', jobType: 'Other', employer: 'Employer B', recruiterId: otherRecruiter.id, country: 'Qatar' } });
+  const legacyJob = await prisma.job.create({ data: { title: 'Unassigned legacy job', employer: 'Legacy employer', country: 'Qatar' } });
+  await prisma.application.create({ data: { candidateId: candidate.id, jobId: ownJob.id } });
+  await prisma.application.create({ data: { candidateId: candidate.id, jobId: otherJob.id } });
+  const privateCandidate = await prisma.candidate.create({ data: { name: 'Private Candidate', firstName: 'Private', lastName: 'Candidate', dateOfBirth: new Date('1990-01-01'), gender: 'Male', maritalStatus: 'Single', passport: 'PRIVATE123', email: 'private@example.test', phone: '0700000001', registeredBy: 'Self', branchId: otherBranch.id, commissionTotal: 9000 } });
+  await prisma.application.create({ data: { candidateId: privateCandidate.id, jobId: otherJob.id } });
+  const ownedPath = path.join(env.UPLOAD_DIR, 'owned.pdf'); fs.writeFileSync(ownedPath, '%PDF-1.4\n');
+  const ownedDocument = await prisma.document.create({ data: { candidateId: candidate.id, documentType: 'CV', name: 'CV', fileName: 'owned.pdf', filePath: ownedPath, mimeType: 'application/pdf' } });
+  const privateDocument = await prisma.document.create({ data: { candidateId: privateCandidate.id, documentType: 'CV', name: 'Private CV', fileName: 'private.pdf', filePath: path.join(env.UPLOAD_DIR, 'private.pdf'), mimeType: 'application/pdf' } });
+  const recruiterJobs = await request('/jobs', recruiterToken).then(response => response.json()); assert.deepEqual(recruiterJobs.map(job => job.id), [ownJob.id]); assert.ok(!recruiterJobs.some(job => job.id === legacyJob.id));
+  const applicants = await request('/candidates', recruiterToken).then(response => response.json()); assert.equal(applicants.length, 1); assert.equal(applicants[0].id, candidate.id); assert.equal(applicants[0].applications.length, 1);
+  const applications = await request('/applications', recruiterToken).then(response => response.json()); assert.equal(applications.length, 1); assert.equal(applications[0].jobId, ownJob.id);
+  const forbidden = new Set(['commissionTotal', 'agreedFee', 'paidAmount', 'officeFee', 'visaFee', 'medicalFee', 'publicTrackingToken', 'trackingNumber', 'specialComments', 'filePath', 'totalRevenue', '_count']);
+  const assertSafe = object => { if (!object || typeof object !== 'object') return; for (const [key, value] of Object.entries(object)) { assert.equal(forbidden.has(key), false, `Recruiter response leaked ${key}`); assertSafe(value); } };
+  assertSafe(applicants); assertSafe(applications); assertSafe(await request('/branches', recruiterToken).then(response => response.json()));
+  assert.equal((await request(`/documents/${ownedDocument.id}`, recruiterToken)).status, 200);
+  assert.equal((await request(`/documents/${privateDocument.id}`, recruiterToken)).status, 404);
+  for (const route of ['/transactions', `/candidates/${candidate.id}/statement.pdf`, `/transactions/${payment.id}/receipt.pdf`]) assert.equal((await request(route, recruiterToken)).status, 403);
+  assert.equal((await request('/candidates/export', recruiterToken, { method: 'POST', body: JSON.stringify({ ids: [candidate.id], columns: ['commission'] }) })).status, 403);
+  assert.equal((await request(`/candidates/${candidate.id}`, recruiterToken, { method: 'PATCH', body: '{}' })).status, 403);
+  assert.equal((await request(`/documents/${ownedDocument.id}`, recruiterToken, { method: 'DELETE' })).status, 403);
+  assert.equal((await request(`/jobs/${otherJob.id}`, recruiterToken, { method: 'PATCH', body: '{}' })).status, 403);
+  assert.equal((await request('/recruiters', recruiterToken, { method: 'POST', body: '{}' })).status, 403);
+  console.log('PASS recruiter account role isolation, job ownership, document scope and financial redaction');
+  assert.equal((await request('/users/report', admin)).status, 200);
+  assert.equal((await request(`/branches/${otherBranch.id}`, branchToken, { method: 'DELETE' })).status, 403);
+  assert.equal((await request('/auth/logout', admin, { method: 'POST' })).status, 204);
+  assert.equal((await request('/auth/me', admin)).status, 401);
+  console.log('PASS admin restrictions and logged-out token invalidation');
+  console.log('POSTGRES VALIDATION PASSED');
+} finally {
+  if (server) {
+    const exited = new Promise(resolve => server.once('exit', resolve)); server.kill(); await exited;
+  }
+  await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+  await prisma.$disconnect();
+  fs.rmSync(env.UPLOAD_DIR, { recursive: true, force: true });
+  console.log('Temporary validation schema removed');
+}

@@ -1,3 +1,43 @@
+## Daily database and document backups
+
+The daily job creates a PostgreSQL custom-format dump and a compressed archive of `/opt/roms-api/uploads`. Local archives are stored root-only under `/var/backups/roms` with 14-day retention. Once a Drive remote is configured, both archives are uploaded to its encrypted `rclone crypt` remote and Drive copies older than 90 days are pruned. The timer runs at 02:00 Africa/Nairobi and catches up after downtime.
+
+Install the backup script and units from `server/`:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y rclone
+sudo install -o root -g root -m 750 roms-daily-backup.sh /usr/local/sbin/roms-daily-backup.sh
+sudo install -o root -g root -m 750 roms-restore-backup.sh /usr/local/sbin/roms-restore-backup.sh
+sudo install -d -o root -g root -m 700 /var/backups/roms
+sudo install -o root -g root -m 600 roms-backup.env.example /etc/roms-backup.env
+sudo install -o root -g root -m 644 roms-daily-backup.service /etc/systemd/system/roms-daily-backup.service
+sudo install -o root -g root -m 644 roms-daily-backup.timer /etc/systemd/system/roms-daily-backup.timer
+sudo install -o root -g root -m 644 roms-restore@.service /etc/systemd/system/roms-restore@.service
+```
+
+Configure two rclone remotes as root with `sudo rclone config --config /root/.config/rclone/rclone.conf`: a Google Drive remote named `roms-drive`, then a `crypt` remote named `roms-encrypted` pointing to a private Drive folder such as `roms-drive:ROMS/encrypted-backups`. If rclone asks for browser authorization, open its printed URL, sign in to Google, and enter the returned code only into the VPS terminal. Choose strong crypt password and salt values and keep them in the root-only rclone config; they are needed to restore encrypted files. Do not share the Drive folder, authorization code, or crypt credentials in chat.
+
+Set the remote in `/etc/roms-backup.env`:
+
+```text
+RCLONE_REMOTE=roms-encrypted:ROMS/database-and-documents
+RCLONE_CONFIG=/root/.config/rclone/rclone.conf
+```
+
+Until `RCLONE_REMOTE` is set, the timer still creates local backups but logs that it skipped Drive upload. Then test and enable the schedule:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl start roms-daily-backup.service
+sudo journalctl -u roms-daily-backup.service -n 30 --no-pager
+sudo systemctl enable --now roms-daily-backup.timer
+systemctl list-timers roms-daily-backup.timer
+```
+
+Super Admins can also open **Backups** in ROMS, run **Back up to Google Drive**, choose a paired database/uploads snapshot, and trigger **Restore selected snapshot** after typing `RESTORE ROMS`. Restore creates a local pre-restore copy, stops the API while replacing the database and uploads, and then restarts it. Do not close the browser and wait for the API to return before signing in again.
+
+The Drive copy contains both `roms-db-*.dump` and `roms-uploads-*.tar.gz`. For recovery, download both using the `roms-encrypted` remote, restore the dump into a separate database first, and extract the uploads archive back to the configured uploads directory. Keep the crypt password and salt separate from the server; without them the Drive backup cannot be decrypted.
 # ROMS Node/PostgreSQL deployment
 
 This is the replacement path for PocketBase. Keep PostgreSQL private and expose only the Node API through Nginx.
@@ -130,6 +170,6 @@ sudo systemctl restart roms-api
 
 ## Branch administration and payment categories
 
-The supported staff roles are Super Admin, Finance Global, Branch Admin, Branch Finance, Branch Staff, and Recruiter. Branch Admin accounts are attached to a single branch and may manage only that branch's staff and finance users.
+The supported staff roles are Super Admin, Finance Global, Branch Admin, Branch Finance, Branch Staff, and Recruiter. Branch Admin accounts are attached to a single branch and have read-only access to that branch's staff accounts and user activity report. Only Super Admin can create, edit, delete or reset staff accounts. See [the current system blueprint](system-blueprint.md) for source-verified permissions and live deployment facts; the least-privilege service example above is not the current root-run operational service.
 
 Payment entries use Receipt, Refund, or Other. Receipts add to a candidate's Commission Total paid amount, refunds subtract from it, and Other requires a description but does not change commission balance. After adding the branch-admin role and transaction description field, run `npx prisma db push` and `npx prisma generate` from `/opt/roms-api`, then restart `roms-api`.

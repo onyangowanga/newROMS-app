@@ -1,0 +1,17 @@
+[Unit]
+Description=Encrypted ROMS database and document backup to Google Drive
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/roms-backup.env
+ExecStart=/usr/local/sbin/roms-daily-backup.sh
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/backups/roms
+ReadOnlyPaths=/opt/roms-api/uploads

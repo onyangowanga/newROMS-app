@@ -40,6 +40,7 @@ enum CandidateStatus {
 }
 
 enum JobStatus {
+  Pending_approval
   Open
   Filled
   Closed
@@ -98,6 +99,7 @@ model User {
   auditLogs    AuditLog[]
   passportsReceived PassportInventory[] @relation("PassportReceivedBy")
   passportsReleased PassportInventory[] @relation("PassportReleasedBy")
+  recruiterJobs Job[] @relation("RecruiterJobs")
   createdAt    DateTime     @default(now())
   updatedAt    DateTime      @updatedAt
 }
@@ -164,6 +166,8 @@ model Job {
   title                   String
   jobType                 String        @default("Other")
   employer                String
+  recruiterId             String?
+  recruiter               User?         @relation("RecruiterJobs", fields: [recruiterId], references: [id], onDelete: Restrict)
   headcountRequired       Int           @default(0)
   contractDurationMonths  Int           @default(0)
   currency                String        @default("USD")
@@ -180,6 +184,7 @@ model Job {
   applications            Application[]
   createdAt               DateTime      @default(now())
   updatedAt               DateTime      @updatedAt
+  @@index([recruiterId])
 }
 
 model Application {
@@ -211,9 +216,26 @@ model Transaction {
   paymentMethod String          @default("Cash")
   paymentReference String?
   status    TransactionStatus @default(Pending)
+  voided    Boolean           @default(false)
+  voidedAt  DateTime?
+  voidedBy  String?
   date      DateTime          @default(now())
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
+}
+
+model CompanySettings {
+  id          String   @id @default("company")
+  companyName String   @default("Rabiya Employment Links")
+  logoData    String?
+  email       String?
+  phone       String?
+  alternatePhone String?
+  address     String?
+  website     String?
+  registrationNumber String?
+  taxNumber   String?
+  updatedAt   DateTime @updatedAt
 }
 
 model Document {

@@ -5,14 +5,21 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { promisify } from 'node:util';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
 import PDFDocument from 'pdfkit';
+import { PDFDocument as MergePDF } from 'pdf-lib';
+import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
+import { registerBusinessRoutes, brandPdf, companySettings } from './business.js';
+import { candidateScope, recruiterCandidateFields, recruiterCandidateSelection } from './recruiter-access.js';
 
 const prisma = new PrismaClient();
+const execFileAsync = promisify(execFile);
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const jwtSecret = process.env.JWT_SECRET;
@@ -23,10 +30,26 @@ app.use(express.json({ limit: '35mb' }));
 app.use(morgan('combined'));
 app.set('trust proxy', 1);
 const uploadRoot = path.resolve(process.env.UPLOAD_DIR || './uploads');
+const backupEnvironmentPath = '/etc/roms-backup.env';
+const backupEnvironment = fs.existsSync(backupEnvironmentPath) ? dotenv.parse(fs.readFileSync(backupEnvironmentPath)) : {};
+const backupRemote = process.env.RCLONE_REMOTE || backupEnvironment.RCLONE_REMOTE || '';
+const rcloneConfigPath = process.env.RCLONE_CONFIG || backupEnvironment.RCLONE_CONFIG || '';
 fs.mkdirSync(uploadRoot, { recursive: true });
-app.use('/uploads', express.static(uploadRoot));
+app.get('/uploads/:filename', async (req, res) => {
+  const filename = req.params.filename;
+  if (filename !== path.basename(filename)) return res.sendStatus(404);
+  const picture = await prisma.candidate.findFirst({ where: { profilePicturePath: `/uploads/${filename}` }, select: { id: true } });
+  if (!picture) return res.sendStatus(404);
+  res.sendFile(path.join(uploadRoot, filename));
+});
 const publicUser = user => ({ id: user.id, username: user.username, email: user.email, name: user.name, role: user.role, branchId: user.branchId, candidateId: user.candidateId, active: user.active, passwordResetRequired: user.passwordResetRequired });
-const tokenFor = user => jwt.sign({ sub: user.id, ver: user.tokenVersion || 0 }, jwtSecret, { expiresIn: '8h' });
+const sessions = new Map();
+const tokenFor = user => {
+  const sessionId = randomBytes(16).toString('hex');
+  const now = Date.now();
+  sessions.set(sessionId, { lastActive: now, expires: now + 8 * 60 * 60 * 1000, revoked: false });
+  return jwt.sign({ sub: user.id, ver: user.tokenVersion || 0 }, jwtSecret, { expiresIn: '8h', jwtid: sessionId });
+};
 const fail = (res, status, message) => res.status(status).json({ message });
 const userInclude = { branch: true, candidate: true };
 const normalizedUsername = value => String(value || '').trim().toLowerCase();
@@ -40,6 +63,7 @@ const loginAttemptHits = new Map();
 const trackingToken = () => randomBytes(24).toString('hex');
 const branchScopedRoles = ['branch_admin', 'branch_staff', 'branch_finance'];
 const allowedUserRoles = ['super_admin', 'super_finance', 'branch_admin', 'branch_staff', 'branch_finance', 'recruiter'];
+const maxDocumentBytes = 10 * 1024 * 1024;
 const publicAppUrl = (process.env.PUBLIC_APP_URL || 'https://new.rabiyaroms.top').replace(/\/$/, '');
 const mailTransport = process.env.SMTP_HOST ? nodemailer.createTransport({
   host: process.env.SMTP_HOST,
@@ -48,6 +72,20 @@ const mailTransport = process.env.SMTP_HOST ? nodemailer.createTransport({
   ...(process.env.SMTP_USER && process.env.SMTP_PASS ? { auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } } : {})
 }) : null;
 const mailFrom = process.env.MAIL_FROM || process.env.SMTP_USER;
+
+async function listRemoteBackupSnapshots() {
+  const options = { maxBuffer: 1024 * 1024, env: { ...process.env, ...(rcloneConfigPath ? { RCLONE_CONFIG: rcloneConfigPath } : {}) } };
+  const { stdout } = await execFileAsync('/usr/bin/rclone', ['lsf', backupRemote, '--files-only'], options);
+  const databaseSnapshots = new Set();
+  const uploadSnapshots = new Set();
+  for (const file of stdout.split(/\r?\n/)) {
+    const databaseMatch = /^roms-db-(\d{8}T\d{6}Z)\.dump$/.exec(file);
+    const uploadsMatch = /^roms-uploads-(\d{8}T\d{6}Z)\.tar\.gz$/.exec(file);
+    if (databaseMatch) databaseSnapshots.add(databaseMatch[1]);
+    if (uploadsMatch) uploadSnapshots.add(uploadsMatch[1]);
+  }
+  return [...databaseSnapshots].filter(snapshot => uploadSnapshots.has(snapshot)).sort().reverse();
+}
 
 async function sendTemporaryPassword(user, password) {
   if (!mailTransport || !mailFrom) return false;
@@ -133,16 +171,22 @@ async function auth(req, res, next) {
     const token = header.startsWith('Bearer ') ? header.slice(7) : null;
     if (!token) return fail(res, 401, 'Authentication required');
     const payload = jwt.verify(token, jwtSecret);
+    const now = Date.now();
+    for (const [key, record] of sessions) if (record.expires <= now) sessions.delete(key);
+    const session = sessions.get(payload.jti);
+    if (!session || session.revoked || now - session.lastActive >= 10 * 60 * 1000) return fail(res, 401, 'Session inactive for 10 minutes. Please sign in again.');
     const user = await prisma.user.findUnique({ where: { id: payload.sub }, include: userInclude });
     if (!user || !user.active || user.role === 'candidate') return fail(res, 401, 'User account is inactive');
     if ((payload.ver ?? 0) !== (user.tokenVersion || 0)) return fail(res, 401, 'Session has been reset. Please sign in again.');
     if (user.passwordResetRequired && !(req.method === 'POST' && req.path === '/api/auth/first-password')) return fail(res, 403, 'Set a new password to continue.');
+    session.lastActive = now;
+    req.sessionId = payload.jti;
     req.user = user; next();
   } catch { return fail(res, 401, 'Invalid or expired session'); }
 }
 const allow = (...roles) => (req, res, next) => roles.includes(req.user.role) ? next() : fail(res, 403, 'Insufficient permissions');
 const audit = (req, action, entity, entityId, metadata) => prisma.auditLog.create({ data: { actorId: req.user.id, actorName: req.user.name, actorEmail: req.user.email, action, entity, entityId, metadata } }).catch(() => undefined);
-const candidateWhere = user => user.role === 'super_admin' || user.role === 'super_finance' || user.role === 'recruiter' ? {} : { branchId: user.branchId || '__none__' };
+const candidateWhere = candidateScope;
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'roms-api' }));
 app.get('/api/public/jobs', async (_req, res) => res.json(await prisma.job.findMany({ where: { status: 'Open' }, orderBy: { country: 'asc' } })));
@@ -247,13 +291,14 @@ app.post('/api/public/track/link/receipt.pdf', async (req, res) => {
     ['Paid', `KES ${Number(candidate.paidAmount || 0).toLocaleString('en-KE')}`],
     ['Balance Due', `KES ${Number(candidate.commissionTotal || candidate.agreedFee || 0) - Number(candidate.paidAmount || 0)}`]
   ];
-  const pageHeight = 110 + details.reduce((height, [label, value]) => height + 26 + Math.ceil(`${label}: ${value}`.length / 29) * 11, 0);
+  const pageHeight = 230 + details.reduce((height, [label, value]) => height + 26 + Math.ceil(`${label}: ${value}`.length / 29) * 11, 0);
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${candidate.trackingNumber}-receipt.pdf"`);
   const pdf = new PDFDocument({ size: [226.77, pageHeight], margin: 14 });
   pdf.pipe(res);
-  pdf.font('Helvetica-Bold').fontSize(15).text('ROMS', { align: 'center' });
-  pdf.font('Helvetica').fontSize(8).text('APPLICATION RECEIPT', { align: 'center' });
+  brandPdf(pdf, await companySettings(prisma));
+  pdf.font('Helvetica').fontSize(8).text('APPLICATION STATUS REPORT', { align: 'center' });
+  pdf.text(`Serial: STATUS-${candidate.trackingNumber || candidate.id}`, { align: 'center' });
   pdf.moveDown(0.6).moveTo(14, pdf.y).lineTo(212.77, pdf.y).stroke();
   for (const [label, value] of details) {
     pdf.moveDown(0.5).font('Helvetica-Bold').fontSize(8).text(label.toUpperCase());
@@ -311,15 +356,60 @@ app.post('/api/auth/password/change', auth, async (req, res) => {
   res.status(204).end();
 });
 app.get('/api/auth/me', auth, (req, res) => res.json({ user: publicUser(req.user) }));
-app.post('/api/auth/logout', auth, async (req, res) => { await audit(req, 'logout', 'session', req.user.id); res.status(204).end(); });
+app.post('/api/auth/logout', auth, async (req, res) => { sessions.get(req.sessionId).revoked = true; await audit(req, 'logout', 'session', req.user.id); res.status(204).end(); });
 app.get('/api/audit', auth, allow('super_admin'), async (_req, res) => res.json(await prisma.auditLog.findMany({ include: { actor: { select: { id: true, name: true, email: true, role: true } } }, orderBy: { createdAt: 'desc' }, take: 500 })));
+app.get('/api/admin/backups', auth, allow('super_admin'), async (_req, res) => {
+  if (!backupRemote) return fail(res, 503, 'Google Drive backup remote is not configured.');
+  try {
+    const snapshots = await listRemoteBackupSnapshots();
+    res.json({ snapshots, remote: 'Encrypted Google Drive' });
+  } catch (error) {
+    console.error('Could not list backup snapshots:', error.code || error.name || 'rclone error');
+    fail(res, 502, 'Could not load Google Drive backups.');
+  }
+});
+app.get('/api/admin/backups/status', auth, allow('super_admin'), async (req, res) => {
+  const snapshot = String(req.query.snapshot || '');
+  const unit = /^\d{8}T\d{6}Z$/.test(snapshot) ? `roms-restore@${snapshot}.service` : 'roms-daily-backup.service';
+  try {
+    const { stdout } = await execFileAsync('/usr/bin/systemctl', ['show', unit, '-p', 'ActiveState', '-p', 'SubState', '-p', 'Result', '--value']);
+    const [activeState = 'inactive', subState = '', result = ''] = stdout.trim().split(/\r?\n/);
+    res.json({ active: activeState === 'active', running: activeState === 'activating' || activeState === 'active', state: subState, result });
+  } catch { res.json({ active: false, running: false, state: 'unknown', result: 'unknown' }); }
+});
+app.post('/api/admin/backups', auth, allow('super_admin'), async (_req, res) => {
+  if (!backupRemote) return fail(res, 503, 'Google Drive backup remote is not configured.');
+  try {
+    await execFileAsync('/usr/bin/systemctl', ['start', '--no-block', 'roms-daily-backup.service']);
+    res.status(202).json({ accepted: true });
+  } catch (error) {
+    console.error('Could not start backup service:', error.code || error.name || 'systemctl error');
+    fail(res, 500, 'Could not start the backup service.');
+  }
+});
+app.post('/api/admin/backups/restore', auth, allow('super_admin'), async (req, res) => {
+  const snapshot = String(req.body.snapshot || '');
+  if (!/^\d{8}T\d{6}Z$/.test(snapshot)) return fail(res, 400, 'Choose a valid backup snapshot.');
+  if (req.body.confirmation !== 'RESTORE ROMS') return fail(res, 400, 'Type RESTORE ROMS to confirm this destructive operation.');
+  if (!backupRemote) return fail(res, 503, 'Google Drive backup remote is not configured.');
+  try {
+    if (!(await listRemoteBackupSnapshots()).includes(snapshot)) return fail(res, 404, 'That complete backup snapshot is not available.');
+    await execFileAsync('/usr/bin/systemctl', ['start', '--no-block', `roms-restore@${snapshot}.service`]);
+    await audit(_req, 'restore_started', 'backup', snapshot, { snapshot });
+    res.status(202).json({ accepted: true, snapshot });
+  } catch (error) {
+    console.error('Could not start restore service:', error.code || error.name || 'systemctl error');
+    fail(res, 500, 'Could not start the restore service.');
+  }
+});
 app.get('/api/branches', auth, async (req, res) => {
+  if (req.user.role === 'recruiter') return res.json(await prisma.branch.findMany({ select: { id: true, name: true, code: true } }));
   const where = branchScopedRoles.includes(req.user.role) ? { id: req.user.branchId || '__none__' } : {};
   const branches = await prisma.branch.findMany({ where, include: { _count: { select: { users: true, candidates: true } } }, orderBy: { name: 'asc' } });
   const summaries = await Promise.all(branches.map(async branch => {
     const [deployed, revenue] = await Promise.all([
       prisma.candidate.count({ where: { branchId: branch.id, status: 'Deployed' } }),
-      prisma.transaction.aggregate({ where: { branchId: branch.id, status: 'Paid' }, _sum: { amount: true } })
+      prisma.transaction.aggregate({ where: { branchId: branch.id, status: 'Paid', voided: false }, _sum: { amount: true } })
     ]);
     return { ...branch, staff: branch._count.users, activeCandidates: branch._count.candidates - deployed, deployed, totalRevenue: Number(revenue._sum.amount || 0) };
   }));
@@ -358,11 +448,29 @@ app.patch('/api/passports/:id', auth, allow('super_admin', 'branch_admin', 'bran
   res.json(record);
 });
 app.post('/api/branches', auth, allow('super_admin'), async (req, res) => { const branch = await prisma.branch.create({ data: { name: req.body.name, code: req.body.code, accent: req.body.accent || '#0f766e' } }); await audit(req, 'create', 'branch', branch.id); res.status(201).json(branch); });
+app.patch('/api/branches/:id', auth, allow('super_admin'), async (req, res) => {
+  const existing = await prisma.branch.findUnique({ where: { id: req.params.id } });
+  if (!existing) return fail(res, 404, 'Branch not found');
+  const name = String(req.body.name || existing.name).trim();
+  const code = String(req.body.code || existing.code).trim().toUpperCase();
+  if (!name || !code) return fail(res, 400, 'Branch name and code are required.');
+  const branch = await prisma.branch.update({ where: { id: existing.id }, data: { name, code, accent: req.body.accent || existing.accent } });
+  await audit(req, 'update', 'branch', branch.id, { name, code });
+  res.json(branch);
+});
+app.delete('/api/branches/:id', auth, allow('super_admin'), async (req, res) => {
+  const branch = await prisma.branch.findUnique({ where: { id: req.params.id }, include: { _count: { select: { users: true, candidates: true, transactions: true } } } });
+  if (!branch) return fail(res, 404, 'Branch not found');
+  if (branch._count.users || branch._count.candidates || branch._count.transactions) return fail(res, 409, 'Clear or reassign branch users, candidates, and transactions before deleting this branch.');
+  await prisma.branch.delete({ where: { id: branch.id } });
+  await audit(req, 'delete', 'branch', branch.id, { name: branch.name, code: branch.code });
+  res.json({ deleted: true });
+});
 app.get('/api/users', auth, allow('super_admin', 'branch_admin'), async (req, res) => {
   const where = req.user.role === 'branch_admin' ? { branchId: req.user.branchId || '__none__', role: { not: 'candidate' } } : { role: { not: 'candidate' } };
   res.json((await prisma.user.findMany({ where, include: { branch: true }, orderBy: { name: 'asc' } })).map(publicUser));
 });
-app.post('/api/users', auth, allow('super_admin', 'branch_admin'), async (req, res) => {
+app.post('/api/users', auth, allow('super_admin'), async (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
   const name = String(req.body.name || '').trim();
   const username = normalizedUsername(req.body.username);
@@ -384,7 +492,26 @@ app.post('/api/users', auth, allow('super_admin', 'branch_admin'), async (req, r
   catch (error) { console.error('One-time password email failed:', error.code || error.name || 'mail error'); }
   res.status(201).json({ ...publicUser(user), emailSent, temporaryPassword: emailSent ? undefined : oneTimePassword });
 });
-app.post('/api/users/:id/reset-password', auth, allow('super_admin', 'branch_admin'), async (req, res) => {
+app.get('/api/recruiters', auth, async (req, res) => {
+  const where = { role: 'recruiter', ...(req.user.role === 'recruiter' ? { id: req.user.id } : req.user.role === 'branch_admin' ? { branchId: req.user.branchId || '__none__' } : {}) };
+  res.json(await prisma.user.findMany({ where, select: { id: true, name: true, email: true, username: true, active: true, branchId: true }, orderBy: { name: 'asc' } }));
+});
+app.post('/api/recruiters', auth, allow('super_admin', 'branch_admin'), async (req, res) => {
+  const name = String(req.body.name || '').trim();
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const username = normalizedUsername(req.body.username);
+  const branchId = req.user.role === 'branch_admin' ? req.user.branchId : req.body.branchId || null;
+  if (!name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !validUsername(username)) return fail(res, 400, 'Enter a recruiter name, valid email and username.');
+  if (req.user.role === 'branch_admin' && !branchId) return fail(res, 400, 'Your account must have a branch.');
+  if (branchId && !await prisma.branch.findUnique({ where: { id: branchId }, select: { id: true } })) return fail(res, 400, 'Choose a valid branch.');
+  const oneTimePassword = temporaryPassword();
+  const user = await prisma.user.create({ data: { name, email, username, branchId, role: 'recruiter', active: true, passwordHash: await bcrypt.hash(oneTimePassword, 12), passwordResetRequired: true, passwordResetExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) } });
+  await audit(req, 'create', 'user', user.id, { role: 'recruiter', name, username, branchId });
+  let emailSent = false;
+  try { emailSent = await sendTemporaryPassword(user, oneTimePassword); } catch (error) { console.error('Recruiter email failed:', error.code || error.name); }
+  res.status(201).json({ ...publicUser(user), emailSent, temporaryPassword: emailSent ? undefined : oneTimePassword });
+});
+app.post('/api/users/:id/reset-password', auth, allow('super_admin'), async (req, res) => {
   const account = await prisma.user.findUnique({ where: { id: req.params.id } });
   if (!account) return fail(res, 404, 'User account not found');
   if (req.user.role === 'branch_admin' && (account.branchId !== req.user.branchId || !['branch_staff', 'branch_finance'].includes(account.role))) return fail(res, 404, 'User account not found in your branch.');
@@ -400,18 +527,23 @@ app.post('/api/users/:id/reset-password', auth, allow('super_admin', 'branch_adm
   res.json({ username: updated.username, email: updated.email, emailSent, temporaryPassword: emailSent ? undefined : oneTimePassword });
 });
 app.delete('/api/users/:id', auth, allow('super_admin'), async (req, res) => {
-  const recruiter = await prisma.user.findUnique({ where: { id: req.params.id } });
-  if (!recruiter || recruiter.role !== 'recruiter') return fail(res, 404, 'Recruiter account not found');
-  const custodyReferences = await prisma.passportInventory.count({ where: { OR: [{ receivedById: recruiter.id }, { releasedById: recruiter.id }] } });
-  if (custodyReferences) return fail(res, 409, 'Reassign this recruiter’s passport custody records before deleting the account.');
+  if (req.params.id === req.user.id) return fail(res, 409, 'You cannot delete your own administrator account.');
+  const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+  if (!user) return fail(res, 404, 'User account not found');
+  if (user.role === 'candidate') return fail(res, 400, 'Candidate accounts are managed through the candidate portal and cannot be deleted here.');
+  if (await prisma.job.count({ where: { recruiterId: user.id } })) return fail(res, 409, 'Reassign this recruiter’s job orders before deleting the account.');
+  {
+    const custodyReferences = await prisma.passportInventory.count({ where: { OR: [{ receivedById: user.id }, { releasedById: user.id }] } });
+    if (custodyReferences) return fail(res, 409, 'Reassign this user’s passport custody records before deleting the account.');
+  }
   await prisma.$transaction(async tx => {
-    await tx.auditLog.updateMany({ where: { actorId: recruiter.id }, data: { actorName: recruiter.name, actorEmail: recruiter.email } });
-    await tx.user.delete({ where: { id: recruiter.id } });
+    await tx.auditLog.updateMany({ where: { actorId: user.id }, data: { actorName: user.name, actorEmail: user.email } });
+    await tx.user.delete({ where: { id: user.id } });
   });
-  await audit(req, 'delete', 'recruiter', recruiter.id, { name: recruiter.name, email: recruiter.email, branchId: recruiter.branchId });
+  await audit(req, 'delete', 'user', user.id, { name: user.name, email: user.email, role: user.role, branchId: user.branchId });
   res.json({ deleted: true });
 });
-app.patch('/api/users/:id', auth, allow('super_admin', 'branch_admin'), async (req, res) => {
+app.patch('/api/users/:id', auth, allow('super_admin'), async (req, res) => {
   const existing = await prisma.user.findUnique({ where: { id: req.params.id } });
   if (!existing) return fail(res, 404, 'User account not found');
   if (req.user.role === 'branch_admin' && (existing.branchId !== req.user.branchId || !['branch_staff', 'branch_finance'].includes(existing.role) || req.user.id === existing.id)) return fail(res, 404, 'User account not found in your branch.');
@@ -426,6 +558,7 @@ app.patch('/api/users/:id', auth, allow('super_admin', 'branch_admin'), async (r
   res.json(publicUser(user));
 });
 app.get('/api/candidates', auth, async (req, res) => {
+  if (req.user.role === 'recruiter') return res.json(await prisma.candidate.findMany({ where: candidateWhere(req.user), select: recruiterCandidateSelection(req.user.id), orderBy: { createdAt: 'desc' } }));
   const candidates = await prisma.candidate.findMany({ where: candidateWhere(req.user), include: { branch: true, applications: { include: { job: true } }, documents: true }, orderBy: { createdAt: 'desc' } });
   const normalized = await Promise.all(candidates.map(async candidate => {
     if (candidate.trackingNumber && candidate.publicTrackingToken) return candidate;
@@ -492,7 +625,7 @@ app.delete('/api/candidates/:id', auth, allow('super_admin'), async (req, res) =
   await audit(req, 'delete', 'candidate', candidate.id, { name: candidate.name, trackingNumber: candidate.trackingNumber, applicationsRemoved: candidate.applications.length });
   res.json({ deleted: true });
 });
-app.patch('/api/candidates/:id', auth, allow('super_admin', 'super_finance', 'branch_admin', 'branch_staff', 'branch_finance', 'recruiter'), async (req, res) => {
+app.patch('/api/candidates/:id', auth, allow('super_admin', 'super_finance', 'branch_admin', 'branch_staff', 'branch_finance'), async (req, res) => {
   const existing = await prisma.candidate.findUnique({ where: { id: req.params.id } });
   const branchRestricted = branchScopedRoles.includes(req.user.role);
   if (!existing || (branchRestricted && existing.branchId !== req.user.branchId)) return fail(res, 404, 'Candidate not found');
@@ -550,11 +683,111 @@ app.patch('/api/candidates/:id', auth, allow('super_admin', 'super_finance', 'br
   });
   await audit(req, 'update', 'candidate', candidate.id, body); res.json(candidate);
 });
-app.post('/api/candidates/:id/documents', auth, allow('super_admin', 'super_finance', 'branch_admin', 'branch_staff', 'branch_finance', 'recruiter'), async (req, res) => { const candidate = await prisma.candidate.findUnique({ where: { id: req.params.id } }); const branchRestricted = branchScopedRoles.includes(req.user.role); if (!candidate || (branchRestricted && candidate.branchId !== req.user.branchId)) return fail(res, 404, 'Candidate not found'); if (!req.body.content || !req.body.fileName) return fail(res, 400, 'A file is required'); const safeName = `${Date.now()}-${path.basename(req.body.fileName)}`; const filePath = path.join(uploadRoot, safeName); fs.writeFileSync(filePath, Buffer.from(req.body.content, 'base64')); if (req.body.kind === 'profile') { const updated = await prisma.candidate.update({ where: { id: candidate.id }, data: { profilePicturePath: `/uploads/${safeName}` } }); await audit(req, 'upload', 'profile_picture', candidate.id); return res.status(201).json(updated); } const document = await prisma.document.create({ data: { candidateId: candidate.id, name: req.body.name || req.body.fileName, fileName: req.body.fileName, filePath, mimeType: req.body.mimeType || 'application/octet-stream', documentType: req.body.documentType || 'Other' } }); await audit(req, 'upload', 'document', document.id, { candidateId: candidate.id, documentType: document.documentType }); res.status(201).json(document); });
-app.post('/api/candidates/:id/documents/scan', auth, allow('super_admin', 'super_finance', 'branch_admin', 'branch_staff', 'branch_finance', 'recruiter'), async (req, res) => {
+const documentFileName = (candidate, type, extension) => `${candidate.name}_${type}`.replace(/[^a-z0-9 _-]/gi, '').replace(/\s+/g, '_').slice(0, 150) + extension;
+const allowedDocumentTypes = ['Passport', 'Good Conduct', 'Fit Medical', 'Academic Documents', 'CV', 'Drivers Licence', 'Employment Contract', 'Visa', 'Other'];
+const documentMimeType = fileName => ({ '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' })[path.extname(fileName).toLowerCase()];
+const validDocumentBytes = (bytes, extension) => extension === '.pdf' ? bytes.subarray(0, 5).toString() === '%PDF-' : extension === '.png' ? bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) : bytes.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex'));
+app.post('/api/candidates/:id/documents', auth, allow('super_admin', 'super_finance', 'branch_admin', 'branch_staff', 'branch_finance'), async (req, res) => {
+  const candidate = await prisma.candidate.findUnique({ where: { id: req.params.id } });
+  if (!candidate || (branchScopedRoles.includes(req.user.role) && candidate.branchId !== req.user.branchId)) return fail(res, 404, 'Candidate not found');
+  if (!req.body.content || !req.body.fileName) return fail(res, 400, 'A file is required');
+  const profile = req.body.kind === 'profile';
+  const type = String(req.body.documentType || 'Other').trim();
+  if (!profile && !allowedDocumentTypes.includes(type)) return fail(res, 400, 'Choose a valid document type');
+  if (!profile && await prisma.document.findFirst({ where: { candidateId: candidate.id, documentType: { equals: type, mode: 'insensitive' } } })) return fail(res, 409, 'This document type has already been uploaded for this candidate');
+  const extension = path.extname(req.body.fileName).toLowerCase();
+  if (!documentMimeType(req.body.fileName)) return fail(res, 400, 'Upload a PDF, JPEG, or PNG file');
+  const bytes = Buffer.from(req.body.content, 'base64');
+  if (bytes.length > maxDocumentBytes) return fail(res, 413, 'Document must be 10MB or smaller');
+  if (!validDocumentBytes(bytes, extension)) return fail(res, 400, 'The file contents do not match its extension');
+  const fileName = documentFileName(candidate, type, extension);
+  const filePath = path.join(uploadRoot, `${randomBytes(12).toString('hex')}-${fileName}`);
+  fs.writeFileSync(filePath, bytes);
+  if (profile) {
+    const updated = await prisma.candidate.update({ where: { id: candidate.id }, data: { profilePicturePath: `/uploads/${path.basename(filePath)}` } });
+    await audit(req, 'upload', 'profile_picture', candidate.id);
+    return res.status(201).json(updated);
+  }
+  const document = await prisma.document.create({ data: { candidateId: candidate.id, name: type, fileName, filePath, mimeType: documentMimeType(fileName), documentType: type } });
+  await audit(req, 'upload', 'document', document.id, { candidateId: candidate.id, documentType: type });
+  res.status(201).json(document);
+});
+async function authorizedDocument(req, res) {
+  const document = await prisma.document.findUnique({ where: { id: req.params.id } });
+  if (!document) return { error: fail(res, 404, 'Document not found') };
+  const candidate = await prisma.candidate.findFirst({ where: { id: document.candidateId, ...(req.user.role === 'recruiter' ? candidateWhere(req.user) : {}) }, select: { id: true, branchId: true } });
+  if (!candidate) return { error: fail(res, 404, 'Candidate not found') };
+  const branchRestricted = branchScopedRoles.includes(req.user.role);
+  if (branchRestricted && candidate.branchId !== req.user.branchId) return { error: fail(res, 403, 'You do not have access to this document') };
+  const safeRoot = path.resolve(uploadRoot);
+  const safeFilePath = path.resolve(document.filePath);
+  if (safeFilePath !== safeRoot && !safeFilePath.startsWith(`${safeRoot}${path.sep}`)) return { error: fail(res, 403, 'Invalid document path') };
+  return { document, candidate, safeFilePath };
+}
+app.get('/api/documents/:id', auth, async (req, res) => {
+  const access = await authorizedDocument(req, res);
+  if (access.error) return;
+  const { document, safeFilePath } = access;
+  if (!fs.existsSync(safeFilePath)) return fail(res, 404, 'Document file not found');
+  const filename = path.basename(document.fileName || document.name || safeFilePath);
+  const mimeType = documentMimeType(filename) || 'application/octet-stream';
+  const download = req.query.download === '1' || req.query.download === 'true';
+  if (download) {
+    return res.download(safeFilePath, filename, { headers: { 'Content-Type': mimeType } });
+  }
+  res.setHeader('Content-Type', mimeType);
+  res.sendFile(safeFilePath);
+});
+app.delete('/api/documents/:id', auth, allow('super_admin', 'super_finance', 'branch_admin', 'branch_staff', 'branch_finance'), async (req, res) => {
+  const access = await authorizedDocument(req, res);
+  if (access.error) return;
+  const { document, safeFilePath } = access;
+  await prisma.document.delete({ where: { id: document.id } });
+  if (fs.existsSync(safeFilePath)) fs.rmSync(safeFilePath, { force: true });
+  await audit(req, 'delete', 'document', document.id, { candidateId: document.candidateId, documentType: document.documentType });
+  res.json({ deleted: true });
+});
+app.post('/api/candidates/:id/documents/combined', auth, async (req, res) => {
+  const candidate = await prisma.candidate.findFirst({ where: { id: req.params.id, ...(req.user.role === 'recruiter' ? candidateWhere(req.user) : {}) } });
+  if (!candidate || (branchScopedRoles.includes(req.user.role) && candidate.branchId !== req.user.branchId)) return fail(res, 404, 'Candidate not found');
+  const ids = req.body.documentIds;
+  if (!Array.isArray(ids) || ids.length < 2 || ids.length > 20 || new Set(ids).size !== ids.length || ids.some(id => typeof id !== 'string')) return fail(res, 400, 'Choose 2 to 20 different documents');
+  const documents = await prisma.document.findMany({ where: { candidateId: candidate.id, id: { in: ids } } });
+  if (documents.length !== ids.length) return fail(res, 404, 'Document not found');
+  const byId = new Map(documents.map(item => [item.id, item]));
+  const pdf = await MergePDF.create();
+  try {
+    for (const id of ids) {
+      const item = byId.get(id);
+      const filePath = path.resolve(item.filePath);
+      if (!filePath.startsWith(`${uploadRoot}${path.sep}`)) return fail(res, 403, 'Invalid document path');
+      const bytes = fs.readFileSync(filePath);
+      const extension = path.extname(item.fileName).toLowerCase();
+      if (extension === '.pdf') {
+        const source = await MergePDF.load(bytes);
+        const pages = await pdf.copyPages(source, source.getPageIndices());
+        pages.forEach(page => pdf.addPage(page));
+      } else if (['.jpg', '.jpeg', '.png'].includes(extension)) {
+        const image = extension === '.png' ? await pdf.embedPng(bytes) : await pdf.embedJpg(bytes);
+        const page = pdf.addPage([image.width, image.height]);
+        page.drawImage(image, { x: 0, y: 0, width: image.width, height: image.height });
+      } else return fail(res, 400, 'Only PDF, JPEG, and PNG documents can be combined');
+    }
+    const result = await pdf.save();
+    res.type('application/pdf');
+    res.attachment(documentFileName(candidate, 'combined_documents', '.pdf'));
+    res.send(Buffer.from(result));
+  } catch (error) {
+    return fail(res, 400, 'One of the selected documents is missing, damaged, or password-protected');
+  }
+});
+app.post('/api/candidates/:id/documents/scan', auth, allow('super_admin', 'super_finance', 'branch_admin', 'branch_staff', 'branch_finance'), async (req, res) => {
   const candidate = await prisma.candidate.findUnique({ where: { id: req.params.id } });
   const branchRestricted = branchScopedRoles.includes(req.user.role);
   if (!candidate || (branchRestricted && candidate.branchId !== req.user.branchId)) return fail(res, 404, 'Candidate not found');
+  const type = String(req.body.documentType || 'Other').trim();
+  if (!allowedDocumentTypes.includes(type)) return fail(res, 400, 'Choose a valid document type');
+  if (await prisma.document.findFirst({ where: { candidateId: candidate.id, documentType: { equals: type, mode: 'insensitive' } } })) return fail(res, 409, 'This document type has already been uploaded for this candidate');
   if (!Array.isArray(req.body.pages) || req.body.pages.length === 0) return fail(res, 400, 'Capture at least one document page');
   if (req.body.pages.length > 20) return fail(res, 400, 'A scan can contain at most 20 pages');
   if (req.body.pages.some(page => !page.content || !['image/jpeg', 'image/png'].includes(page.mimeType))) return fail(res, 400, 'Scanned pages must be JPEG or PNG images');
@@ -562,24 +795,98 @@ app.post('/api/candidates/:id/documents/scan', auth, allow('super_admin', 'super
   const chunks = [];
   const completed = new Promise((resolve, reject) => { pdf.on('data', chunk => chunks.push(chunk)); pdf.on('end', resolve); pdf.on('error', reject); });
   try {
+    let totalBytes = 0;
     for (const page of req.body.pages) {
       const bytes = Buffer.from(String(page.content || ''), 'base64');
       if (!bytes.length) throw new Error('Empty scan page');
+      totalBytes += bytes.length;
+      if (totalBytes > maxDocumentBytes) return fail(res, 413, 'Scanned document must be 10MB or smaller');
       pdf.addPage({ size: 'A4', margin: 0 });
       pdf.image(bytes, 0, 0, { fit: [595.28, 841.89], align: 'center', valign: 'center' });
     }
     pdf.end();
     await completed;
   } catch { return fail(res, 400, 'Could not convert the captured images to PDF'); }
-  const fileName = `candidate-${candidate.id}-${Date.now()}.pdf`;
-  const filePath = path.join(uploadRoot, fileName);
+  const fileName = documentFileName(candidate, type, '.pdf');
+  const filePath = path.join(uploadRoot, `${randomBytes(12).toString('hex')}-${fileName}`);
   fs.writeFileSync(filePath, Buffer.concat(chunks));
-  const document = await prisma.document.create({ data: { candidateId: candidate.id, name: req.body.name || 'Camera scan', fileName, filePath, mimeType: 'application/pdf', documentType: req.body.documentType || 'Other' } });
+  const document = await prisma.document.create({ data: { candidateId: candidate.id, name: type, fileName, filePath, mimeType: 'application/pdf', documentType: type } });
   await audit(req, 'scan_upload', 'document', document.id, { candidateId: candidate.id, documentType: document.documentType, pages: req.body.pages.length });
   res.status(201).json(document);
 });
-app.get('/api/jobs', auth, async (req, res) => res.json(await prisma.job.findMany({ where: req.user.role === 'super_admin' ? {} : { status: { in: ['Open', 'Filled'] } }, orderBy: { createdAt: 'desc' } })));
-app.post('/api/jobs', auth, allow('super_admin', 'recruiter'), async (req, res) => { const body = req.body; const required = ['title', 'jobType', 'headcountRequired', 'contractDurationMonths', 'currency', 'minimumSalary', 'maximumSalary', 'location', 'country', 'requiredSkills']; if (required.some(field => body[field] === undefined || body[field] === '')) return fail(res, 400, 'Complete all required job-order fields'); const countryPrefixes = { Qatar: 'QAT', Kuwait: 'KWT', UAE: 'UAE', Saudi: 'SAU', Oman: 'OMN', Bahrain: 'BHR', Europe: 'EUR', 'USA/ Canada/ UK': 'USA' }; const prefix = countryPrefixes[body.country] || String(body.country).toUpperCase().slice(0, 3); const count = await prisma.job.count({ where: { country: body.country } }); const reference = `JO-${prefix}-${String(count + 1).padStart(3, '0')}`; const job = await prisma.job.create({ data: { reference, title: body.title, jobType: body.jobType, employer: body.employer || 'Unassigned employer', headcountRequired: Number(body.headcountRequired), contractDurationMonths: Number(body.contractDurationMonths), currency: body.currency, minimumSalary: Number(body.minimumSalary), maximumSalary: Number(body.maximumSalary), location: body.location, country: body.country, requiredSkills: body.requiredSkills, comments: body.comments || null, openings: Number(body.headcountRequired), status: 'Open' } }); await audit(req, 'create', 'job', job.id, { reference }); res.status(201).json(job); });
+app.get('/api/jobs', auth, async (req, res) => {
+  const where = req.user.role === 'recruiter' ? { recruiterId: req.user.id } : ['super_admin', 'branch_admin'].includes(req.user.role) ? {} : { status: { in: ['Open', 'Filled', 'Pending_approval'] } };
+  res.json(await prisma.job.findMany({ where, orderBy: { createdAt: 'desc' } }));
+});
+async function createJobWithReference(data, country, prefix) {
+  let sequence = await prisma.job.count({ where: { country } }) + 1;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const reference = `JO-${prefix}-${String(sequence).padStart(3, '0')}`;
+    try { return await prisma.job.create({ data: { ...data, reference } }); }
+    catch (error) {
+      if (error.code !== 'P2002') throw error;
+      const conflict = await prisma.job.findUnique({ where: { reference }, select: { id: true } });
+      if (!conflict) throw error;
+      sequence += 1;
+    }
+  }
+  throw new Error('Could not allocate a unique job-order reference');
+}
+app.post('/api/jobs', auth, allow('super_admin', 'super_finance', 'branch_admin', 'branch_finance', 'branch_staff', 'recruiter'), async (req, res) => {
+  const body = req.body;
+  const required = ['title', 'jobType', 'headcountRequired', 'contractDurationMonths', 'currency', 'minimumSalary', 'maximumSalary', 'location', 'country', 'requiredSkills'];
+  if (required.some(field => body[field] === undefined || body[field] === '')) return fail(res, 400, 'Complete all required job-order fields');
+  const recruiterId = req.user.role === 'recruiter' ? req.user.id : body.recruiterId;
+  const recruiter = recruiterId && await prisma.user.findFirst({ where: { id: recruiterId, role: 'recruiter', active: true } });
+  if (!recruiter || (req.user.role === 'branch_admin' && recruiter.branchId !== req.user.branchId)) return fail(res, 400, 'Choose an active recruiter/employer in your scope.');
+  if (![Number(body.minimumSalary), Number(body.maximumSalary), Number(body.headcountRequired), Number(body.contractDurationMonths)].every(Number.isFinite) || Number(body.minimumSalary) < 0 || Number(body.maximumSalary) < Number(body.minimumSalary) || !Number.isInteger(Number(body.headcountRequired)) || Number(body.headcountRequired) < 1 || !Number.isInteger(Number(body.contractDurationMonths)) || Number(body.contractDurationMonths) < 1) return fail(res, 400, 'Enter valid salary, headcount and contract duration values.');
+  const countryPrefixes = { Qatar: 'QAT', Kuwait: 'KWT', UAE: 'UAE', Saudi: 'SAU', Oman: 'OMN', Bahrain: 'BHR', Europe: 'EUR', 'USA/ Canada/ UK': 'USA' };
+  const prefix = countryPrefixes[body.country] || String(body.country).toUpperCase().slice(0, 3);
+  const job = await createJobWithReference({
+    title: body.title, jobType: body.jobType, employer: recruiter.name, recruiterId: recruiter.id,
+    headcountRequired: Number(body.headcountRequired), contractDurationMonths: Number(body.contractDurationMonths),
+    currency: body.currency, minimumSalary: Number(body.minimumSalary), maximumSalary: Number(body.maximumSalary),
+    location: body.location, country: body.country, requiredSkills: body.requiredSkills,
+    comments: body.comments || null, openings: Number(body.headcountRequired), status: 'Pending_approval'
+  }, body.country, prefix);
+  await audit(req, 'submit_for_approval', 'job', job.id, { reference: job.reference, title: job.title });
+  res.status(201).json(job);
+});
+app.patch('/api/jobs/:id', auth, allow('super_admin', 'branch_admin'), async (req, res) => {
+  const body = req.body;
+  const existing = await prisma.job.findUnique({ where: { id: req.params.id } });
+  if (!existing) return fail(res, 404, 'Job order not found');
+  if (req.user.role === 'branch_admin' && existing.recruiterId) {
+    const owner = await prisma.user.findUnique({ where: { id: existing.recruiterId }, select: { branchId: true } });
+    if (owner?.branchId !== req.user.branchId) return fail(res, 404, 'Job order not found in your branch.');
+  }
+  const recruiterId = body.recruiterId || existing.recruiterId;
+  const recruiter = recruiterId && await prisma.user.findFirst({ where: { id: recruiterId, role: 'recruiter', active: true } });
+  if (!recruiter || (req.user.role === 'branch_admin' && recruiter.branchId !== req.user.branchId)) return fail(res, 400, 'Choose an active recruiter/employer in your scope.');
+  const required = ['title', 'jobType', 'headcountRequired', 'contractDurationMonths', 'currency', 'minimumSalary', 'maximumSalary', 'location', 'country', 'requiredSkills'];
+  if (required.some(field => body[field] === undefined || body[field] === '')) return fail(res, 400, 'Complete all required job-order fields');
+  const minimumSalary = Number(body.minimumSalary);
+  const maximumSalary = Number(body.maximumSalary);
+  const headcountRequired = Number(body.headcountRequired);
+  if (![minimumSalary, maximumSalary, headcountRequired].every(Number.isFinite) || minimumSalary < 0 || maximumSalary < minimumSalary || headcountRequired < 1) return fail(res, 400, 'Enter valid salary and headcount values.');
+  const job = await prisma.job.update({ where: { id: existing.id }, data: {
+    title: body.title, jobType: body.jobType, employer: recruiter.name, recruiterId: recruiter.id,
+    headcountRequired, openings: headcountRequired, contractDurationMonths: Number(body.contractDurationMonths),
+    currency: body.currency, minimumSalary, maximumSalary, location: body.location,
+    country: body.country, requiredSkills: body.requiredSkills, comments: body.comments || null
+  } });
+  await audit(req, 'update', 'job', job.id, { reference: job.reference, status: job.status });
+  res.json(job);
+});
+app.patch('/api/jobs/:id/approve', auth, allow('super_admin', 'branch_admin'), async (req, res) => {
+  const existing = await prisma.job.findUnique({ where: { id: req.params.id } });
+  if (!existing) return fail(res, 404, 'Job order not found');
+  if (existing.status !== 'Pending_approval') return fail(res, 409, 'Only pending job orders can be approved.');
+  const status = existing.filled >= existing.openings ? 'Filled' : 'Open';
+  const job = await prisma.job.update({ where: { id: existing.id }, data: { status } });
+  await audit(req, 'approve', 'job', job.id, { reference: job.reference });
+  res.json(job);
+});
 app.delete('/api/jobs/:id', auth, allow('super_admin'), async (req, res) => {
   const job = await prisma.job.findUnique({ where: { id: req.params.id }, include: { _count: { select: { applications: true } } } });
   if (!job) return fail(res, 404, 'Job order not found');
@@ -590,9 +897,14 @@ app.delete('/api/jobs/:id', auth, allow('super_admin'), async (req, res) => {
   await audit(req, 'delete', 'job', job.id, { reference: job.reference, title: job.title, country: job.country, applicationsRemoved: job._count.applications });
   res.json({ deleted: true, applicationsRemoved: job._count.applications });
 });
-app.get('/api/applications', auth, async (req, res) => { const where = req.user.role === 'candidate' ? { candidateId: req.user.candidateId || '__none__' } : req.user.branchId && !['super_admin', 'super_finance', 'recruiter'].includes(req.user.role) ? { candidate: { branchId: req.user.branchId } } : {}; res.json(await prisma.application.findMany({ where, include: { candidate: true, job: true }, orderBy: { createdAt: 'desc' } })); });
-app.post('/api/applications', auth, allow('super_admin', 'recruiter', 'branch_admin', 'branch_staff'), async (req, res) => { const candidate = await prisma.candidate.findUnique({ where: { id: req.body.candidateId } }); if (!candidate || (branchScopedRoles.includes(req.user.role) && candidate.branchId !== req.user.branchId)) return fail(res, 403, 'Candidate is outside your branch'); const application = await prisma.application.create({ data: { candidateId: candidate.id, jobId: req.body.jobId, status: req.body.status || 'Shortlisted' } }); await prisma.job.update({ where: { id: req.body.jobId }, data: { filled: { increment: 1 } } }); await audit(req, 'create', 'application', application.id); res.status(201).json(application); });
+app.get('/api/applications', auth, async (req, res) => {
+  const recruiter = req.user.role === 'recruiter';
+  const where = recruiter ? { job: { recruiterId: req.user.id } } : branchScopedRoles.includes(req.user.role) ? { candidate: { branchId: req.user.branchId || '__none__' } } : {};
+  res.json(await prisma.application.findMany({ where, include: { candidate: recruiter ? { select: recruiterCandidateFields } : true, job: true }, orderBy: { createdAt: 'desc' } }));
+});
+app.post('/api/applications', auth, allow('super_admin', 'branch_admin', 'branch_staff'), async (req, res) => { const candidate = await prisma.candidate.findUnique({ where: { id: req.body.candidateId } }); if (!candidate || (branchScopedRoles.includes(req.user.role) && candidate.branchId !== req.user.branchId)) return fail(res, 403, 'Candidate is outside your branch'); const application = await prisma.application.create({ data: { candidateId: candidate.id, jobId: req.body.jobId, status: req.body.status || 'Shortlisted' } }); await prisma.job.update({ where: { id: req.body.jobId }, data: { filled: { increment: 1 } } }); await audit(req, 'create', 'application', application.id); res.status(201).json(application); });
 app.get('/api/transactions', auth, async (req, res) => {
+  if (req.user.role === 'recruiter') return fail(res, 403, 'Recruiters cannot access financial records.');
   const where = ['branch_admin', 'branch_finance'].includes(req.user.role) ? { branchId: req.user.branchId || '__none__' } : ['super_admin', 'super_finance'].includes(req.user.role) ? {} : { branchId: '__none__' };
   res.json(await prisma.transaction.findMany({ where, include: { branch: true, candidate: true }, orderBy: { createdAt: 'desc' } }));
 });
@@ -622,6 +934,7 @@ app.patch('/api/transactions/:id', auth, allow('super_admin', 'super_finance', '
   const result = await prisma.$transaction(async database => {
     const existing = await database.transaction.findUnique({ where: { id: req.params.id } });
     if (!existing || (req.user.role === 'branch_finance' && existing.branchId !== req.user.branchId)) return { missing: true };
+    if (existing.voided || existing.status === 'Paid') return { locked: true };
     const newStatus = req.body.status;
     if (!['Pending', 'Pending_approval', 'Paid', 'Rejected'].includes(newStatus)) return { invalidStatus: true };
     const effect = ['Receipt', 'Candidate fee', 'Agency commission'].includes(existing.type) ? 1 : existing.type === 'Refund' ? -1 : 0;
@@ -632,13 +945,18 @@ app.patch('/api/transactions/:id', auth, allow('super_admin', 'super_finance', '
       if (candidate) {
         const nextPaid = Number(candidate.paidAmount) + effect * Number(existing.amountKes) * (willBePaid ? 1 : -1);
         if (nextPaid < 0) return { refundTooLarge: true };
-        await database.candidate.update({ where: { id: existing.candidateId }, data: { paidAmount: nextPaid } });
+        const adjustment = effect * Number(existing.amountKes) * (willBePaid ? 1 : -1);
+        const changed = await database.candidate.updateMany({ where: { id: existing.candidateId, ...(adjustment < 0 ? { paidAmount: { gte: -adjustment } } : {}) }, data: { paidAmount: { increment: adjustment } } });
+        if (!changed.count) throw Object.assign(new Error('Payment balance changed. Refresh and try again.'), { code: 'PAYMENT_CONFLICT' });
       }
     }
-    const transaction = await database.transaction.update({ where: { id: existing.id }, data: { status: newStatus } });
+    const claimed = await database.transaction.updateMany({ where: { id: existing.id, status: existing.status, voided: false }, data: { status: newStatus } });
+    if (!claimed.count) throw Object.assign(new Error('Payment changed during approval. Refresh and try again.'), { code: 'PAYMENT_CONFLICT' });
+    const transaction = await database.transaction.findUnique({ where: { id: existing.id } });
     return { transaction };
   });
   if (result.missing) return fail(res, 404, 'Transaction not found');
+  if (result.locked) return fail(res, 409, 'Approved or voided payments cannot change status. Use void instead.');
   if (result.invalidStatus) return fail(res, 400, 'Invalid transaction status.');
   if (result.refundTooLarge) return fail(res, 409, 'Refund exceeds the candidate’s recorded receipts.');
   await audit(req, 'update', 'transaction', result.transaction.id, { status: result.transaction.status });
@@ -648,6 +966,7 @@ app.delete('/api/transactions/:id', auth, allow('super_admin'), async (req, res)
   const result = await prisma.$transaction(async tx => {
     const transaction = await tx.transaction.findUnique({ where: { id: req.params.id } });
     if (!transaction) return null;
+    if (transaction.status === 'Paid' || transaction.voided) return { locked: true };
     const commissionEffect = ['Receipt', 'Candidate fee', 'Agency commission'].includes(transaction.type) ? 1 : transaction.type === 'Refund' ? -1 : 0;
     if (transaction.status === 'Paid' && transaction.candidateId && commissionEffect) {
       const candidate = await tx.candidate.findUnique({ where: { id: transaction.candidateId }, select: { paidAmount: true } });
@@ -657,8 +976,10 @@ app.delete('/api/transactions/:id', auth, allow('super_admin'), async (req, res)
     return transaction;
   });
   if (!result) return fail(res, 404, 'Transaction entry not found');
+  if (result.locked) return fail(res, 409, 'Approved or voided entries must be retained. Use void instead of delete.');
   await audit(req, 'delete', 'transaction', result.id, { candidateId: result.candidateId, party: result.party, amountKes: Number(result.amountKes), status: result.status });
   res.json({ deleted: true });
 });
-app.use((error, _req, res, _next) => { console.error(error); res.status(error.code === 'P2002' ? 409 : 500).json({ message: 'Request could not be completed' }); });
+registerBusinessRoutes(app, { prisma, auth, allow, audit, fail, candidateWhere });
+app.use((error, _req, res, _next) => { console.error(error); res.status(['P2002', 'PAYMENT_CONFLICT'].includes(error.code) ? 409 : 500).json({ message: error.code === 'PAYMENT_CONFLICT' ? error.message : 'Request could not be completed' }); });
 app.listen(port, () => console.log(`ROMS API listening on ${port}`));

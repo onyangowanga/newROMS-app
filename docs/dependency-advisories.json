@@ -1,0 +1,254 @@
+[
+  {
+    "id": "CVE-2026-93687",
+    "name": "braces vulnerable to stack-exhaustion denial of service through deeply nested patterns",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "high",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "package-lock.json"
+      ],
+      "explanation": "[CVE-2026-93687](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm): braces vulnerable to stack-exhaustion denial of service through deeply nested patterns\n\nSeverity: HIGH\n\nAffected dependencies:\n  - braces@3.0.3 (declared at package-lock.json)"
+    }
+  },
+  {
+    "id": "CVE-2026-40345",
+    "name": "DeepmergeTS has stack exhaustion when merging recursive object graphs",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "high",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package-lock.json"
+      ],
+      "explanation": "[CVE-2026-40345](https://github.com/advisories/GHSA-ggr8-5vv4-36mx): DeepmergeTS has stack exhaustion when merging recursive object graphs\n\nSeverity: HIGH\n\nAffected dependencies:\n  - deepmerge-ts@7.1.5 (declared at server/package-lock.json)\n\nRecommended fix:\n  - Upgrade deepmerge-ts to 8.0.0 or later"
+    }
+  },
+  {
+    "id": "CVE-2025-13033",
+    "name": "Nodemailer: Email to an unintended domain can occur due to Interpretation Conflict",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "medium",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package.json"
+      ],
+      "explanation": "[CVE-2025-13033](https://github.com/advisories/GHSA-mm7p-fcc7-pg87): Nodemailer: Email to an unintended domain can occur due to Interpretation Conflict\n\nSeverity: MEDIUM\n\nAffected dependencies:\n  - nodemailer@6.10.1 (declared at server/package.json)\n\nRecommended fix:\n  - Upgrade nodemailer to 7.0.7 or later"
+    }
+  },
+  {
+    "id": "CVE-2025-14874",
+    "name": "Nodemailer’s addressparser is vulnerable to DoS caused by recursive calls",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "high",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package.json"
+      ],
+      "explanation": "[CVE-2025-14874](https://github.com/advisories/GHSA-rcmh-qjqh-p98v): Nodemailer’s addressparser is vulnerable to DoS caused by recursive calls\n\nSeverity: HIGH\n\nAffected dependencies:\n  - nodemailer@6.10.1 (declared at server/package.json)\n\nRecommended fix:\n  - Upgrade nodemailer to 7.0.11 or later"
+    }
+  },
+  {
+    "id": "GHSA-c7w3-x93f-qmm8",
+    "name": "Nodemailer has SMTP command injection due to unsanitized `envelope.size` parameter",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "low",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package.json"
+      ],
+      "explanation": "[GHSA-c7w3-x93f-qmm8](https://github.com/advisories/GHSA-c7w3-x93f-qmm8): Nodemailer has SMTP command injection due to unsanitized `envelope.size` parameter\n\nSeverity: LOW\n\nAffected dependencies:\n  - nodemailer@6.10.1 (declared at server/package.json)\n\nRecommended fix:\n  - Upgrade nodemailer to 8.0.4 or later"
+    }
+  },
+  {
+    "id": "GHSA-vvjj-xcjg-gr5g",
+    "name": "Nodemailer Vulnerable to SMTP Command Injection via CRLF in Transport name Option (EHLO/HELO) ",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "medium",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package.json"
+      ],
+      "explanation": "[GHSA-vvjj-xcjg-gr5g](https://github.com/advisories/GHSA-vvjj-xcjg-gr5g): Nodemailer Vulnerable to SMTP Command Injection via CRLF in Transport name Option (EHLO/HELO) \n\nSeverity: MEDIUM\n\nAffected dependencies:\n  - nodemailer@6.10.1 (declared at server/package.json)\n\nRecommended fix:\n  - Upgrade nodemailer to 8.0.5 or later"
+    }
+  },
+  {
+    "id": "GHSA-r7g4-qg5f-qqm2",
+    "name": "Nodemailer: Improper TLS Certificate Validation in OAuth2 Token Fetch Enables Credential Interception",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "medium",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package.json"
+      ],
+      "explanation": "[GHSA-r7g4-qg5f-qqm2](https://github.com/advisories/GHSA-r7g4-qg5f-qqm2): Nodemailer: Improper TLS Certificate Validation in OAuth2 Token Fetch Enables Credential Interception\n\nSeverity: MEDIUM\n\nAffected dependencies:\n  - nodemailer@6.10.1 (declared at server/package.json)\n\nRecommended fix:\n  - Upgrade nodemailer to 8.0.8 or later"
+    }
+  },
+  {
+    "id": "GHSA-wqvq-jvpq-h66f",
+    "name": "Nodemailer jsonTransport bypasses disableFileAccess and disableUrlAccess during message normalization",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "medium",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package.json"
+      ],
+      "explanation": "[GHSA-wqvq-jvpq-h66f](https://github.com/advisories/GHSA-wqvq-jvpq-h66f): Nodemailer jsonTransport bypasses disableFileAccess and disableUrlAccess during message normalization\n\nSeverity: MEDIUM\n\nAffected dependencies:\n  - nodemailer@6.10.1 (declared at server/package.json)\n\nRecommended fix:\n  - Upgrade nodemailer to 8.0.9 or later"
+    }
+  },
+  {
+    "id": "GHSA-268h-hp4c-crq3",
+    "name": "Nodemailer: CRLF injection in Nodemailer List-* header comments allows arbitrary message header injection",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "medium",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package.json"
+      ],
+      "explanation": "[GHSA-268h-hp4c-crq3](https://github.com/advisories/GHSA-268h-hp4c-crq3): Nodemailer: CRLF injection in Nodemailer List-* header comments allows arbitrary message header injection\n\nSeverity: MEDIUM\n\nAffected dependencies:\n  - nodemailer@6.10.1 (declared at server/package.json)\n\nRecommended fix:\n  - Upgrade nodemailer to 8.0.9 or later"
+    }
+  },
+  {
+    "id": "CVE-2026-82659",
+    "name": "Nodemailer: Message-level raw option bypasses disableFileAccess/disableUrlAccess, enabling arbitrary file read and full-response SSRF in the delivered message",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "high",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package.json"
+      ],
+      "explanation": "[CVE-2026-82659](https://github.com/advisories/GHSA-p6gq-j5cr-w38f): Nodemailer: Message-level raw option bypasses disableFileAccess/disableUrlAccess, enabling arbitrary file read and full-response SSRF in the delivered message\n\nSeverity: HIGH\n\nAffected dependencies:\n  - nodemailer@6.10.1 (declared at server/package.json)\n\nRecommended fix:\n  - Upgrade nodemailer to 9.0.1 or later"
+    }
+  },
+  {
+    "id": "GHSA-8m3c-c648-2xjj",
+    "name": "Nodemailer: resolveContent() on a MailMessage bypasses disableFileAccess/disableUrlAccess when called with the legacy signature",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "medium",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package.json"
+      ],
+      "explanation": "[GHSA-8m3c-c648-2xjj](https://github.com/advisories/GHSA-8m3c-c648-2xjj): Nodemailer: resolveContent() on a MailMessage bypasses disableFileAccess/disableUrlAccess when called with the legacy signature\n\nSeverity: MEDIUM\n\nAffected dependencies:\n  - nodemailer@6.10.1 (declared at server/package.json)\n\nRecommended fix:\n  - Upgrade nodemailer to 9.1.1 or later"
+    }
+  },
+  {
+    "id": "GHSA-cc9r-2j5m-2m83",
+    "name": "Nodemailer: Recipient-domain validation bypass via RFC 5322 comment mis-parsing leads to email delivery to an attacker-controlled domain",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "medium",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package.json"
+      ],
+      "explanation": "[GHSA-cc9r-2j5m-2m83](https://github.com/advisories/GHSA-cc9r-2j5m-2m83): Nodemailer: Recipient-domain validation bypass via RFC 5322 comment mis-parsing leads to email delivery to an attacker-controlled domain\n\nSeverity: MEDIUM\n\nAffected dependencies:\n  - nodemailer@6.10.1 (declared at server/package.json)\n\nRecommended fix:\n  - Upgrade nodemailer to 9.1.0 or later"
+    }
+  },
+  {
+    "id": "GHSA-2x7j-588g-ccc2",
+    "name": "Nodemailer: Quadratic (O(n²)) time complexity in addressparser allows remote denial of service via a crafted address list",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "high",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package.json"
+      ],
+      "explanation": "[GHSA-2x7j-588g-ccc2](https://github.com/advisories/GHSA-2x7j-588g-ccc2): Nodemailer: Quadratic (O(n²)) time complexity in addressparser allows remote denial of service via a crafted address list\n\nSeverity: HIGH\n\nAffected dependencies:\n  - nodemailer@6.10.1 (declared at server/package.json)\n\nRecommended fix:\n  - Upgrade nodemailer to 9.1.0 or later"
+    }
+  },
+  {
+    "id": "GHSA-wmmp-3585-3rmp",
+    "name": "Nodemailer: IDN/Punycode domain allow-list bypass leads to email delivery to an attacker-controlled domain",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "medium",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package.json"
+      ],
+      "explanation": "[GHSA-wmmp-3585-3rmp](https://github.com/advisories/GHSA-wmmp-3585-3rmp): Nodemailer: IDN/Punycode domain allow-list bypass leads to email delivery to an attacker-controlled domain\n\nSeverity: MEDIUM\n\nAffected dependencies:\n  - nodemailer@6.10.1 (declared at server/package.json)\n\nRecommended fix:\n  - Upgrade nodemailer to 9.1.0 or later"
+    }
+  },
+  {
+    "id": "GHSA-6vj9-mwq6-2f5v",
+    "name": "Nodemailer: Process-global DNS cache reuses TLS `servername` across transports, enabling cross-tenant SMTP credential disclosure",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "medium",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package.json"
+      ],
+      "explanation": "[GHSA-6vj9-mwq6-2f5v](https://github.com/advisories/GHSA-6vj9-mwq6-2f5v): Nodemailer: Process-global DNS cache reuses TLS `servername` across transports, enabling cross-tenant SMTP credential disclosure\n\nSeverity: MEDIUM\n\nAffected dependencies:\n  - nodemailer@6.10.1 (declared at server/package.json)\n\nRecommended fix:\n  - Upgrade nodemailer to 10.0.2 or later"
+    }
+  },
+  {
+    "id": "GHSA-8vvx-rff5-p5rq",
+    "name": "Nodemailer: Nested structured recipient arrays bypass the parser depth limit and cause stack exhaustion DoS",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "medium",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package.json"
+      ],
+      "explanation": "[GHSA-8vvx-rff5-p5rq](https://github.com/advisories/GHSA-8vvx-rff5-p5rq): Nodemailer: Nested structured recipient arrays bypass the parser depth limit and cause stack exhaustion DoS\n\nSeverity: MEDIUM\n\nAffected dependencies:\n  - nodemailer@6.10.1 (declared at server/package.json)\n\nRecommended fix:\n  - Upgrade nodemailer to 10.0.2 or later"
+    }
+  },
+  {
+    "id": "GHSA-v53p-9fqp-m79j",
+    "name": "Nodemailer: Quadratic backtracking in the addressparser free-text fallback allows remote denial of service",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "high",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package.json"
+      ],
+      "explanation": "[GHSA-v53p-9fqp-m79j](https://github.com/advisories/GHSA-v53p-9fqp-m79j): Nodemailer: Quadratic backtracking in the addressparser free-text fallback allows remote denial of service\n\nSeverity: HIGH\n\nAffected dependencies:\n  - nodemailer@6.10.1 (declared at server/package.json)\n\nRecommended fix:\n  - Upgrade nodemailer to 10.0.6 or later"
+    }
+  },
+  {
+    "id": "CVE-2026-41907",
+    "name": "uuid: Missing buffer bounds check in v3/v5/v6 when buf is provided",
+    "status": "FOUND",
+    "category": "CVE",
+    "severity": "medium",
+    "storyPoint": 1,
+    "evidence": {
+      "files": [
+        "server/package-lock.json"
+      ],
+      "explanation": "[CVE-2026-41907](https://github.com/advisories/GHSA-w5hq-g745-h8pq): uuid: Missing buffer bounds check in v3/v5/v6 when buf is provided\n\nSeverity: MEDIUM\n\nAffected dependencies:\n  - uuid@8.3.2 (declared at server/package-lock.json)\n\nRecommended fix:\n  - Upgrade uuid to 12.0.1 or later\n  - Upgrade uuid to 13.0.1 or later\n  - Upgrade uuid to 11.1.1 or later"
+    }
+  }
+]

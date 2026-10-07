@@ -1,0 +1,17 @@
+[Unit]
+Description=Restore ROMS from encrypted backup snapshot %i
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/roms-backup.env
+ExecStart=/usr/local/sbin/roms-restore-backup.sh %i
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/backups/roms /opt/roms-api/uploads
+ReadOnlyPaths=/root/.config/rclone/rclone.conf

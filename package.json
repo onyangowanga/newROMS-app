@@ -2,9 +2,14 @@
   "name": "roms-frontend",
   "private": true,
   "scripts": {
-    "build:css": "tailwindcss -i ./tailwind.input.css -o ./tailwind.css --minify"
+    "build:icons": "esbuild tests/icons-source.js --bundle --minify --format=esm --outfile=js/ui-icons.js",
+    "build:css": "npm run build:icons && tailwindcss -i ./tailwind.input.css -o ./tailwind.css --minify",
+    "test": "npm --prefix server test && playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "esbuild": "^0.28.2",
+    "lucide": "^1.52.0",
     "tailwindcss": "^3.4.17"
   }
 }
